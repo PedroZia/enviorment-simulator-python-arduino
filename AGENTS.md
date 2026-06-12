@@ -1,5 +1,7 @@
 # AGENTS.md - Simulador Seguidor de Linha com Q-Linearning
 
+Read `CONTEXT.md` for full conversation history, design decisions, and parameter details.
+
 ## Project type
 
 Python 3.14 + Arduino UNO. No test suite, no linter, no typechecker.
