@@ -194,8 +194,8 @@ class Simulator:
             return True
 
         # Todos sensores na linha (linha de partida)
-        if self.robot.check_all_sensors_on_line() and self.robot.steps > 10:
-            return True
+        # if self.robot.check_all_sensors_on_line() and self.robot.steps > 10:
+        #     return True
 
         return False
 
