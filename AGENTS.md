@@ -1,4 +1,4 @@
-# AGENTS.md - Simulador Seguidor de Linha com Q-Linearning
+# AGENTS.md - Simulador Seguidor de Linha com Q-Learning
 
 Read `CONTEXT.md` for full conversation history, design decisions, and parameter details.
 
@@ -10,7 +10,7 @@ Python 3.14 + Arduino UNO. No test suite, no linter, no typechecker.
 
 ```bash
 pip install -r requirements.txt
-python tracks/track_generator.py   # generates oval.npy, curves.npy, etc. in tracks/
+python main.py --generate-tracks   # generates oval.npy, curves.npy, etc. in tracks/
 ```
 
 Dependencies: `numpy`, `pyserial`, `pygame-ce` (NOT `pygame`). pygame-ce is the community fork with Python 3.14 support.
@@ -21,9 +21,11 @@ Dependencies: `numpy`, `pyserial`, `pygame-ce` (NOT `pygame`). pygame-ce is the 
 # With Arduino
 python main.py --track tracks/oval.npy --port COM3
 
-# Without Arduino (keyboard control: arrows=move, space=stop, R=reset, T=toggle mode)
+# Without Arduino (keyboard: arrows=move, space=stop, R=reset, T=toggle mode, Q=quit)
 python main.py --no-serial --track tracks/oval.npy
 ```
+
+Additional flags: `--no-display` (headless), `--port COMx` (override serial port).
 
 ## Architecture
 
@@ -45,4 +47,4 @@ Arduino sends action code (`F`/`E`/`D`/`P`/`R`), Python responds with 3-bit sens
 - All modules use `sys.path.insert(0, os.path.dirname(...))` to find `config.py`. Run from project root.
 - Port defaults to `COM3` in `config.py`. Change via `--port` flag or edit the file.
 - Arduino expects `READY\n` handshake on connect before starting Q-learning loop.
-- Tracks must exist as `.npy` files before running. Run `python tracks/track_generator.py` first.
+- Tracks must exist as `.npy` files before running. Run `python main.py --generate-tracks` first.
