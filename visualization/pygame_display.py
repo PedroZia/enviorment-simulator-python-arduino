@@ -114,7 +114,8 @@ class PygameDisplay:
             f"Episodio: {episode}  |  Steps: {robot.steps}  |  Modo: {mode}",
             f"Epsilon: {epsilon:.4f}  |  Reward: {robot.total_reward:.1f}",
             f"Pos: ({robot.x:.1f}, {robot.y:.1f})  Theta: {robot.theta:.0f}°",
-            f"Sensores: {robot.get_sensors()}  |  [Q] Sair  [R] Reset  [T] Treino/Aplic",
+            f"Sensores: {robot.get_sensors()}  |  Borda: {config.BOUNDARY_MODE}",
+            f"[Q] Sair  [R] Reset  [T] Treino/Aplic  [B] Borda",
         ]
 
         if extra_info:
@@ -127,7 +128,7 @@ class PygameDisplay:
 
     def handle_events(self) -> dict:
         """Processa eventos do Pygame. Retorna dict com acoes."""
-        events = {"quit": False, "reset": False, "toggle_mode": False}
+        events = {"quit": False, "reset": False, "toggle_mode": False, "toggle_boundary": False}
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -139,6 +140,8 @@ class PygameDisplay:
                     events["reset"] = True
                 elif event.key == pygame.K_t:
                     events["toggle_mode"] = True
+                elif event.key == pygame.K_b:
+                    events["toggle_boundary"] = True
 
         return events
 

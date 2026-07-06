@@ -1,0 +1,9 @@
+episode,steps,reward,epsilon,reason,mode
+1,76,41.5,0.01,manual,TREINO
+2,41,16.0,0.0,manual,TREINO
+3,23,5.5,0.0,manual,TREINO
+4,16,-1.5,0.01,manual,TREINO
+5,12,-1.5,0.01,manual,TREINO
+6,16,7.5,0.0,manual,TREINO
+7,21,16.5,0.0,auto,TREINO
+8,71,23.5,0.01,manual,TREINO

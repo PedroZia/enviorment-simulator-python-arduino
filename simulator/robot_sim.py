@@ -28,12 +28,44 @@ class RobotSim:
             self.x = float(sx)
             self.y = float(sy)
 
-        self.theta = np.random.uniform(0, 360)
+        # Theta alinhado com a direcao da linha + variacao
+        self.theta = self._get_line_direction(self.x, self.y)
         self.steps = 0
         self.total_reward = 0.0
         self.start_x = self.x
         self.start_y = self.y
         return self.get_sensors()
+
+    def _get_line_direction(self, x, y) -> float:
+        """Estima a direcao da linha na posicao (x, y) baseado nos vizinhos."""
+        x_int, y_int = int(round(x)), int(round(y))
+        
+        # Procurar celulas de linha em volta (raio 3)
+        found = []
+        for dx in range(-3, 4):
+            for dy in range(-3, 4):
+                nx, ny = x_int + dx, y_int + dy
+                if self.track.is_on_line(nx, ny):
+                    found.append((nx, ny))
+        
+        if len(found) < 2:
+            # Poucos vizinhos, usar angulo aleatorio
+            return np.random.uniform(0, 360)
+        
+        # Calcular direcao media entre vizinhos
+        # Usar PCA simplificado: direcao do primeiro eigenvector
+        points = np.array(found, dtype=float)
+        mean = points.mean(axis=0)
+        centered = points - mean
+        cov = np.cov(centered.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        # O eigenvector com maior eigenvalue e a direcao principal
+        main_dir = eigenvectors[:, np.argmax(eigenvalues)]
+        angle = math.degrees(math.atan2(main_dir[1], main_dir[0]))
+        
+        # Adicionar variacao aleatoria (-30 a +30 graus)
+        angle += np.random.uniform(-30, 30)
+        return angle % 360
 
     def step(self, action_code: str) -> str:
         """Executa uma acao e retorna os novos sensores."""
@@ -45,29 +77,71 @@ class RobotSim:
             self._turn_left()
         elif action_code == "D":
             self._turn_right()
-        elif action_code == "P":
-            pass  # Parar, sem movimento
-        elif action_code == "R":
-            self._move_reverse()
         else:
             raise ValueError(f"Acao desconhecida: {action_code}")
 
         sensors = self.get_sensors()
+        reward = self.compute_reward(sensors, action_code)
+        self.total_reward += reward
         return sensors
+
+    def compute_reward(self, sensors: str, action_code: str) -> float:
+        """Calcula recompensa baseada nos sensores e acao (igual ao ESP32).
+        
+        Tabela de recompensas:
+        | Estado            | Frente | Esquerda | Direita |
+        |-------------------|--------|----------|---------|
+        | Centro na linha   | +2.0   | +0.5     | +0.5    |
+        | Lateral esquerda  | +0.5   | +1.0     | -0.5    |
+        | Lateral direita   | +0.5   | -0.5     | +1.0    |
+        | Todos fora        | -1.0   | +0.5     | +0.5    |
+        """
+        s_esq = int(sensors[0])
+        s_cen = int(sensors[1])
+        s_dir = int(sensors[2])
+        
+        is_forward = (action_code == "F")
+        is_left = (action_code == "E")
+        is_right = (action_code == "D")
+
+        # Centro na linha
+        if s_cen == 1:
+            return 2.0 if is_forward else 0.5
+
+        # Apenas sensor esquerdo na linha
+        if s_esq == 1 and s_dir == 0:
+            if is_left:
+                return 1.0    # Gira para recuperar
+            elif is_right:
+                return -0.5   # Gira para piorar
+            else:
+                return 0.5    # Frente
+
+        # Apenas sensor direito na linha
+        if s_dir == 1 and s_esq == 0:
+            if is_right:
+                return 1.0    # Gira para recuperar
+            elif is_left:
+                return -0.5   # Gira para piorar
+            else:
+                return 0.5    # Frente
+
+        # Ambos laterais na linha (centro fora) - caso raro
+        if s_esq == 1 and s_dir == 1:
+            return 0.5 if is_forward else 0.5
+
+        # Todos fora da linha
+        if is_forward:
+            return -1.0       # Seguir em frente e pior
+        else:
+            return 0.5        # Girar para tentar achar
 
     def _move_forward(self):
         """Move o robo 1 celula para frente na direcao theta."""
         theta_rad = math.radians(self.theta)
         self.x += config.ROBOT_SPEED * math.cos(theta_rad)
         self.y += config.ROBOT_SPEED * math.sin(theta_rad)
-        self._clamp_position()
-
-    def _move_reverse(self):
-        """Move o robo 1 celula para tras na direcao theta."""
-        theta_rad = math.radians(self.theta)
-        self.x -= config.ROBOT_SPEED * math.cos(theta_rad)
-        self.y -= config.ROBOT_SPEED * math.sin(theta_rad)
-        self._clamp_position()
+        self._apply_boundary()
 
     def _turn_left(self):
         """Gira o robo para a esquerda."""
@@ -79,10 +153,14 @@ class RobotSim:
         self.theta += config.TURN_ANGLE
         self.theta = self.theta % 360
 
-    def _clamp_position(self):
-        """Mantem o robo dentro dos limites da pista."""
-        self.x = max(0, min(self.x, self.track.width - 1))
-        self.y = max(0, min(self.y, self.track.height - 1))
+    def _apply_boundary(self):
+        """Aplica limites da pista (wraparound ou clamp)."""
+        if config.BOUNDARY_MODE == "wrap":
+            self.x = self.x % self.track.width
+            self.y = self.y % self.track.height
+        else:
+            self.x = max(0, min(self.x, self.track.width - 1))
+            self.y = max(0, min(self.y, self.track.height - 1))
 
     def get_sensors(self) -> str:
         """Calcula os 3 sensores IR baseado na posicao atual."""
@@ -93,8 +171,9 @@ class RobotSim:
         fy = math.sin(theta_rad)
 
         # Vetor lateral (perpendicular a direcao)
-        lx = -fy
-        ly = fx
+        # Negativo para apontar para a esquerda em coordenadas de tela (y baixo)
+        lx = fy
+        ly = -fx
 
         # Posicao do sensor central (a frente)
         cx = self.x + fx * config.SENSOR_DISTANCE
@@ -120,8 +199,8 @@ class RobotSim:
         theta_rad = math.radians(self.theta)
         fx = math.cos(theta_rad)
         fy = math.sin(theta_rad)
-        lx = -fy
-        ly = fx
+        lx = fy
+        ly = -fx
 
         cx = self.x + fx * config.SENSOR_DISTANCE
         cy = self.y + fy * config.SENSOR_DISTANCE

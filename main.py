@@ -2,6 +2,7 @@ import sys
 import os
 import time
 import math
+import csv
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,6 +24,10 @@ class Simulator:
         self.epsilon = config.EPSILON_START
         self.mode = "TREINO"
         self.steps_since_line = 0
+
+        # Historico de episodios
+        self.episode_history = []
+        self.history_file = "episode_history.csv"
 
         # Carregar pista
         self.track = Track()
@@ -80,11 +85,6 @@ class Simulator:
         if self.serial_comm and self.serial_comm.connected:
             self.serial_comm.send_sensors(sensors, f"EPISODE:{self.episode}")
 
-    def compute_epsilon(self):
-        """Calcula epsilon atual baseado no decaimento linear."""
-        decay_rate = (config.EPSILON_START - config.EPSILON_END) / max(1, self.episode)
-        self.epsilon = max(config.EPSILON_END, config.EPSILON_START - decay_rate * self.episode)
-
     def run(self):
         """Loop principal do simulador."""
         print("[SIM] Iniciando simulador...")
@@ -109,6 +109,8 @@ class Simulator:
                     continue
                 if events["toggle_mode"]:
                     self._toggle_mode()
+                if events["toggle_boundary"]:
+                    self._toggle_boundary()
 
             # Receber acao do Arduino
             action = self._receive_action()
@@ -151,10 +153,6 @@ class Simulator:
             return "E"
         elif keys[pygame.K_RIGHT]:
             return "D"
-        elif keys[pygame.K_DOWN]:
-            return "R"
-        elif keys[pygame.K_SPACE]:
-            return "P"
 
         # Esperar um pouco para nao consumir CPU
         pygame.time.wait(50)
@@ -164,6 +162,10 @@ class Simulator:
         """Processa uma acao recebida."""
         if action not in config.ACTION_CODES:
             return
+
+        # Atualizar epsilon do ESP32 (se conectado)
+        if self.serial_comm and self.serial_comm.connected:
+            self.epsilon = self.serial_comm.last_epsilon
 
         # Executar acao no simulador
         sensors = self.robot.step(action)
@@ -193,10 +195,6 @@ class Simulator:
         if self.robot.check_start_line_return() and self.robot.steps > 20:
             return True
 
-        # Todos sensores na linha (linha de partida)
-        # if self.robot.check_all_sensors_on_line() and self.robot.steps > 10:
-        #     return True
-
         return False
 
     def _handle_episode_end(self, reason: str):
@@ -204,8 +202,8 @@ class Simulator:
         print(f"[SIM] Episodio {self.episode} finalizado ({reason}) - "
               f"Steps: {self.robot.steps}, Reward: {self.robot.total_reward:.1f}")
 
-        # Atualizar epsilon
-        self.compute_epsilon()
+        # Salvar no historico
+        self._log_episode(reason)
 
         # Enviar RESET para Arduino
         if self.serial_comm and self.serial_comm.connected:
@@ -215,6 +213,46 @@ class Simulator:
         time.sleep(0.5)
         self.start_episode()
 
+    def _log_episode(self, reason: str):
+        """Registra episodio no historico."""
+        record = {
+            "episode": self.episode,
+            "steps": self.robot.steps,
+            "reward": round(self.robot.total_reward, 2),
+            "epsilon": round(self.epsilon, 4),
+            "reason": reason,
+            "mode": self.mode
+        }
+        self.episode_history.append(record)
+
+        # Imprimir resumo a cada 10 episodios
+        if self.episode % 10 == 0:
+            self._print_summary()
+
+    def _print_summary(self):
+        """Imprime resumo dos ultimos 10 episodios."""
+        if len(self.episode_history) < 2:
+            return
+        recent = self.episode_history[-10:]
+        avg_steps = sum(r["steps"] for r in recent) / len(recent)
+        avg_reward = sum(r["reward"] for r in recent) / len(recent)
+        print(f"[RESUMO] Ep {self.episode-9}-{self.episode}: "
+              f"Steps medio={avg_steps:.0f}, Reward medio={avg_reward:.1f}, "
+              f"Epsilon={self.epsilon:.4f}")
+
+    def _save_history(self):
+        """Salva historico de episodios em CSV."""
+        if not self.episode_history:
+            return
+        try:
+            with open(self.history_file, "w", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=["episode", "steps", "reward", "epsilon", "reason", "mode"])
+                writer.writeheader()
+                writer.writerows(self.episode_history)
+            print(f"[SIM] Historico salvo em {self.history_file}")
+        except Exception as e:
+            print(f"[SIM] Erro ao salvar historico: {e}")
+
     def _toggle_mode(self):
         """Alterna entre modo Treino e Aplicacao."""
         if self.mode == "TREINO":
@@ -222,12 +260,25 @@ class Simulator:
             self.epsilon = 0.0
         else:
             self.mode = "TREINO"
-            self.compute_epsilon()
+            self.epsilon = config.EPSILON_START  # Reset epsilon
         print(f"[SIM] Modo alterado: {self.mode}")
+
+        # Enviar modo para ESP32
+        if self.serial_comm and self.serial_comm.connected:
+            self.serial_comm.send_sensors("000", f"MODE:{self.mode}")
+
+    def _toggle_boundary(self):
+        """Alterna entre modo wraparound e clamp."""
+        if config.BOUNDARY_MODE == "wrap":
+            config.BOUNDARY_MODE = "clamp"
+        else:
+            config.BOUNDARY_MODE = "wrap"
+        print(f"[SIM] Borda alterada: {config.BOUNDARY_MODE}")
 
     def shutdown(self):
         """Encerra o simulador."""
         print("[SIM] Encerrando...")
+        self._save_history()
         if self.serial_comm:
             self.serial_comm.disconnect()
         if self.display:

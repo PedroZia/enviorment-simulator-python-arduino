@@ -1,16 +1,15 @@
 /*
- * Line Follower Robot - Q-Learning (versao ESP32)
+ * Line Follower Robot - Controle Discreto (versao ESP32)
+ * 
+ * Controle simples: 
+ *   - Linha no centro → Frente (F)
+ *   - Linha na esquerda → Esquerda (E)
+ *   - Linha na direita → Direita (D)
+ *   - Todos fora → Mantem ultima acao
  * 
  * Comunicacao serial com Python (simulador):
  *   Arduino envia: acao (F, E, D)
  *   Python envia: sensores (ex: 101) ou sensores:RESET ou sensores:EPISODE:N
- * 
- * Modos (botao pino 2):
- *   Treino: epsilon-greedy, Q-table atualizada
- *   Aplicacao: epsilon=0, melhor acao sempre
- * 
- * Acoes: Frente(F), Esquerda(E), Direita(D)
- * Q-table: 8 estados x 3 acoes = 24 floats (96 bytes)
  */
 
 #include <math.h>
@@ -37,43 +36,19 @@
 #define LEDC_RESOLUTION   8      // 8 bits (0-255)
 
 // =============================================================================
-// Q-LEARNING
-// =============================================================================
-#define NUM_STATES      8    // 3 bits = 8 estados
-#define NUM_ACTIONS     3    // F, E, D (sem Parar e sem Re)
-#define ACTION_FRENTE   0
-#define ACTION_ESQ      1
-#define ACTION_DIR      2
-
-// Parametros
-float alpha = 0.1;           // Learning rate
-float gamma_val = 0.9;       // Discount factor
-float epsilon = 1.0;         // Exploracao
-float epsilon_min = 0.01;
-float epsilon_decay = 0.001; // Decaimento por episodio (~990 episodios)
-
-// Q-table: 8 estados x 3 acoes = 24 floats (96 bytes)
-float q_table[NUM_STATES][NUM_ACTIONS];
-
-// Estado atual e acao
-int current_state = 0;
-int current_action = 0;
-int previous_state = 0;
-int previous_action = 0;
-
-// =============================================================================
-// MOTORES
-// =============================================================================
-#define PWM_FRENTE  100
-#define PWM_CURVA   50
-
-// =============================================================================
 // CONTROLE
 // =============================================================================
-bool modo_treino = true;
+#define PWM_BASE  100  // Velocidade base
+
+char last_action = 'F';  // Ultima acao (para quando perder a linha)
+bool waiting_for_sensors = false;
 unsigned long step_count = 0;
-unsigned long episode_count = 0;
 unsigned long max_steps = 500;
+
+// Sensores recebidos do Python
+int s_esq = 0;
+int s_cen = 0;
+int s_dir = 0;
 
 // Debounce botoes
 unsigned long last_btn_mode_press = 0;
@@ -85,9 +60,6 @@ unsigned long last_btn_reset_press = 0;
 // =============================================================================
 void setup() {
   Serial.begin(115200);
-  
-  // Seed aleatorio usando pino analogico
-  randomSeed(analogRead(36));
   
   // Motores - pinos digitais
   pinMode(PIN_MOTOR_IN1, OUTPUT);
@@ -112,9 +84,6 @@ void setup() {
   pinMode(PIN_BTN_MODE, INPUT_PULLUP);
   pinMode(PIN_BTN_RESET, INPUT_PULLUP);
   
-  // Inicializar Q-table com zeros
-  init_q_table();
-  
   // Sinalizar pronto
   delay(1000);
   Serial.println("READY");
@@ -123,10 +92,8 @@ void setup() {
 // =============================================================================
 // LOOP PRINCIPAL
 // =============================================================================
-bool waiting_for_sensors = false;
-
 void loop() {
-  // Alimentar watchdog - yield para o sistema
+  // Alimentar watchdog
   yield();
   
   // Verificar botoes
@@ -143,115 +110,35 @@ void loop() {
   }
   
   // Se nao esta esperando, executar step
-  if (!waiting_for_sensors) {
-    execute_step();
-  }
+  execute_step();
 }
 
 // =============================================================================
-// Q-LEARNING
+// CONTROLE DISCRETO
 // =============================================================================
-void init_q_table() {
-  for (int s = 0; s < NUM_STATES; s++) {
-    for (int a = 0; a < NUM_ACTIONS; a++) {
-      q_table[s][a] = 0.0;
-    }
-  }
-}
-
-int choose_action(int state) {
-  int action;
-  if (modo_treino && random(1000) < (int)(epsilon * 1000)) {
-    // Exploracao: acao aleatoria
-    action = random(NUM_ACTIONS);
-  } else {
-    // Exploracao: melhor acao
-    action = get_best_action(state);
-  }
-  return action;
-}
-
-int get_best_action(int state) {
-  // Encontrar o valor maximo
-  float best_val = q_table[state][0];
-  for (int a = 1; a < NUM_ACTIONS; a++) {
-    if (q_table[state][a] > best_val) {
-      best_val = q_table[state][a];
-    }
-  }
-  
-  // Contar quantos tem o valor maximo (tie-breaking aleatorio)
-  int count = 0;
-  int candidates[NUM_ACTIONS];
-  for (int a = 0; a < NUM_ACTIONS; a++) {
-    if (q_table[state][a] == best_val) {
-      candidates[count++] = a;
-    }
-  }
-  
-  // Escolher aleatoriamente entre os empatados
-  return candidates[random(count)];
-}
-
-float get_max_q(int state) {
-  float max_val = q_table[state][0];
-  for (int a = 1; a < NUM_ACTIONS; a++) {
-    if (q_table[state][a] > max_val) {
-      max_val = q_table[state][a];
-    }
-  }
-  return max_val;
-}
-
-void update_q_table(int prev_state, int prev_action, float reward, int new_state) {
-  if (!modo_treino) return;
-  
-  float old_q = q_table[prev_state][prev_action];
-  float max_next_q = get_max_q(new_state);
-  float new_q = old_q + alpha * (reward + gamma_val * max_next_q - old_q);
-  
-  q_table[prev_state][prev_action] = new_q;
-}
-
-float compute_reward(int sensors, int action) {
-  int s_esq = (sensors >> 2) & 1;
-  int s_cen = (sensors >> 1) & 1;
-  int s_dir = sensors & 1;
-  
-  bool is_forward = (action == ACTION_FRENTE);
-  bool is_left = (action == ACTION_ESQ);
-  bool is_right = (action == ACTION_DIR);
-  
-  // Centro na linha
+char choose_action(int s_esq, int s_cen, int s_dir) {
+  // Centro na linha → Frente
   if (s_cen == 1) {
-    return is_forward ? 2.0 : 0.5;
+    return 'F';
   }
   
-  // Apenas sensor esquerdo na linha
+  // Apenas esquerda na linha → Vira esquerda
   if (s_esq == 1 && s_dir == 0) {
-    if (is_left) return 1.0;     // Gira para recuperar
-    if (is_right) return -0.5;   // Gira para piorar
-    return 0.5;                  // Frente
+    return 'E';
   }
   
-  // Apenas sensor direito na linha
+  // Apenas direita na linha → Vira direita
   if (s_dir == 1 && s_esq == 0) {
-    if (is_right) return 1.0;    // Gira para recuperar
-    if (is_left) return -0.5;    // Gira para piorar
-    return 0.5;                  // Frente
+    return 'D';
   }
   
-  // Ambos laterais na linha (centro fora)
+  // Ambos laterais (cruzamento) → Frente
   if (s_esq == 1 && s_dir == 1) {
-    return 0.5;
+    return 'F';
   }
   
-  // Todos fora da linha
-  if (is_forward) {
-    return -1.0;  // Seguir em frente e pior
-  } else {
-    return 0.5;   // Girar para tentar achar
-  }
+  // Todos fora → Manter ultima acao
+  return last_action;
 }
 
 // =============================================================================
@@ -264,32 +151,40 @@ void execute_step() {
     return;
   }
   
-  // Escolher acao
-  previous_state = current_state;
-  previous_action = current_action;
-  current_action = choose_action(current_state);
+  // Usar sensores recebidos do Python (ou ler dos pinos se robo real)
+  // Para simulador: sensores vao do Python via serial
+  // Para robo real: ler dos pinos
+  #ifdef USE_LOCAL_SENSORS
+    s_esq = digitalRead(PIN_SENSOR_ESQ) == LOW ? 1 : 0;
+    s_cen = digitalRead(PIN_SENSOR_CEN) == LOW ? 1 : 0;
+    s_dir = digitalRead(PIN_SENSOR_DIR) == LOW ? 1 : 0;
+  #endif
   
-  // Executar acao nos motores
-  execute_action(current_action);
+  // Escolher acao
+  char action = choose_action(s_esq, s_cen, s_dir);
+  last_action = action;
+  
+  // Executar acao nos motores (apenas para robo real)
+  // execute_action(action);
   
   // Enviar acao para Python
-  send_action(current_action);
+  Serial.println(action);
   
   // Marcar que esta esperando sensores
   waiting_for_sensors = true;
   step_count++;
 }
 
-void execute_action(int action) {
+void execute_action(char action) {
   switch (action) {
-    case ACTION_FRENTE:
-      motor_frente(PWM_FRENTE);
+    case 'F':
+      motor_frente(PWM_BASE);
       break;
-    case ACTION_ESQ:
-      motor_esquerda(PWM_CURVA);
+    case 'E':
+      motor_esquerda(PWM_BASE);
       break;
-    case ACTION_DIR:
-      motor_direita(PWM_CURVA);
+    case 'D':
+      motor_direita(PWM_BASE);
       break;
   }
 }
@@ -297,13 +192,6 @@ void execute_action(int action) {
 // =============================================================================
 // COMUNICACAO SERIAL
 // =============================================================================
-void send_action(int action) {
-  char codes[] = {'F', 'E', 'D'};
-  Serial.print(codes[action]);
-  Serial.print(":");
-  Serial.println(epsilon, 4);  // Enviar epsilon real
-}
-
 String read_serial() {
   if (Serial.available()) {
     String line = Serial.readStringUntil('\n');
@@ -314,6 +202,7 @@ String read_serial() {
 }
 
 void process_sensor_response(String response) {
+  // Formato: "101" ou "101:RESET" ou "101:EPISODE:42"
   String sensors_str = "";
   String extra = "";
   
@@ -325,30 +214,18 @@ void process_sensor_response(String response) {
     sensors_str = response;
   }
   
+  // Parse sensores (3 bits)
   if (sensors_str.length() >= 3) {
-    int s_esq = sensors_str.charAt(0) - '0';
-    int s_cen = sensors_str.charAt(1) - '0';
-    int s_dir = sensors_str.charAt(2) - '0';
-    
-    current_state = (s_esq << 2) | (s_cen << 1) | s_dir;
-    
-    // Calcular recompensa e atualizar Q-table
-    float reward = compute_reward(current_state, previous_action);
-    update_q_table(previous_state, previous_action, reward, current_state);
+    s_esq = sensors_str.charAt(0) - '0';
+    s_cen = sensors_str.charAt(1) - '0';
+    s_dir = sensors_str.charAt(2) - '0';
   }
   
+  // Processar extras
   if (extra == "RESET") {
     reset_episode();
   } else if (extra.startsWith("EPISODE:")) {
     // Python informou numero do episodio
-  } else if (extra == "MODE:TREINO") {
-    modo_treino = true;
-    epsilon = 1.0;  // Resetar epsilon para exploração total
-    Serial.println("MODE:TREINO");
-  } else if (extra == "MODE:APLICACAO") {
-    modo_treino = false;
-    epsilon = 0.0;
-    Serial.println("MODE:APLICACAO");
   }
 }
 
@@ -366,9 +243,10 @@ void motor_frente(int pwm) {
 }
 
 void motor_esquerda(int pwm) {
+  // Motor esquerdo para tras (ou parado), motor direito para frente
   digitalWrite(PIN_MOTOR_IN1, LOW);
-  digitalWrite(PIN_MOTOR_IN2, LOW);
-  ledcWrite(PIN_MOTOR_ENA, 0);
+  digitalWrite(PIN_MOTOR_IN2, HIGH);
+  ledcWrite(PIN_MOTOR_ENA, pwm);
   
   digitalWrite(PIN_MOTOR_IN3, HIGH);
   digitalWrite(PIN_MOTOR_IN4, LOW);
@@ -376,13 +254,14 @@ void motor_esquerda(int pwm) {
 }
 
 void motor_direita(int pwm) {
+  // Motor esquerdo para frente, motor direito para tras (ou parado)
   digitalWrite(PIN_MOTOR_IN1, HIGH);
   digitalWrite(PIN_MOTOR_IN2, LOW);
   ledcWrite(PIN_MOTOR_ENA, pwm);
   
   digitalWrite(PIN_MOTOR_IN3, LOW);
-  digitalWrite(PIN_MOTOR_IN4, LOW);
-  ledcWrite(PIN_MOTOR_ENB, 0);
+  digitalWrite(PIN_MOTOR_IN4, HIGH);
+  ledcWrite(PIN_MOTOR_ENB, pwm);
 }
 
 void motor_parar() {
@@ -401,16 +280,18 @@ void motor_parar() {
 void check_buttons() {
   unsigned long now = millis();
   
+  // Botao modo (start/stop)
   if (digitalRead(PIN_BTN_MODE) == LOW && now - last_btn_mode_press > DEBOUNCE_MS) {
     last_btn_mode_press = now;
-    modo_treino = !modo_treino;
-    if (!modo_treino) {
-      epsilon = 0.0;
-    } else {
-      epsilon = 1.0;  // Resetar epsilon para exploração total
+    // Toggle running
+    static bool running = true;
+    running = !running;
+    if (!running) {
+      motor_parar();
     }
   }
   
+  // Botao reset episodio
   if (digitalRead(PIN_BTN_RESET) == LOW && now - last_btn_reset_press > DEBOUNCE_MS) {
     last_btn_reset_press = now;
     reset_episode();
@@ -421,12 +302,8 @@ void check_buttons() {
 // EPISODIO
 // =============================================================================
 void reset_episode() {
-  episode_count++;
   step_count = 0;
-  
-  if (modo_treino) {
-    epsilon = max(epsilon_min, epsilon - epsilon_decay);
-  }
+  last_action = 'F';
   
   motor_parar();
   

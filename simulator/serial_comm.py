@@ -15,6 +15,7 @@ class SerialComm:
         self.baudrate = baudrate or config.BAUD_RATE
         self.ser = None
         self.connected = False
+        self.last_epsilon = 1.0  # Epsilon recebido do ESP32
 
     def connect(self) -> bool:
         """Conecta ao Arduino via serial."""
@@ -51,11 +52,30 @@ class SerialComm:
         self.ser.write(msg.encode("ascii"))
 
     def read_action(self) -> str:
-        """Le acao enviada pelo Arduino."""
+        """Le acao enviada pelo Arduino.
+        
+        Formato: "A:epsilon" (ex: "F:0.9999") ou "READY" ou "MODE:TREINO"
+        Retorna apenas o codigo da acao (F, E, D).
+        """
         if not self.connected:
             return ""
         try:
             line = self.ser.readline().decode("ascii").strip()
+            if not line:
+                return ""
+            
+            # Tentar parsear formato "A:epsilon"
+            if ':' in line and len(line) > 2:
+                parts = line.split(':')
+                action = parts[0]
+                if len(parts) > 1:
+                    try:
+                        self.last_epsilon = float(parts[1])
+                    except ValueError:
+                        pass
+                return action
+            
+            # Formato simples (READY, MODE:TREINO, etc)
             return line
         except Exception:
             return ""
