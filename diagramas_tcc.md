@@ -166,7 +166,7 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-  A([loop()]) --> L["state = read_sensors()<br/>(L<<2)|(C<<1)|R"]
+  A([ciclo do loop]) --> L["state = read_sensors()<br/>(L<<2)|(M<<1)|R"]
   L --> R["reward = compute_reward(state)"]
   R --> Q{"prev_state ≥ 0?<br/>(há passo anterior)"}
   Q -->|sim| UP["q_update(prev_state, prev_action, reward, state)<br/>Q[s,a] += α·(r + γ·max Q[s',·] − Q[s,a])<br/>α=0.1 · γ=0.9"]
@@ -216,7 +216,7 @@ flowchart LR
   QTBL --> QSEL
   QSEL -->|action| SER
   SER -->|action| PROT
-  PROT -->|usa action em robot_step()| TR
+  PROT -->|"usa action em robot_step()"| TR
 ```
 
 > Também há `FakeESP32` (modo `--fake`) que imita o protocolo em Python puro — útil para testar o ambiente sem hardware.
@@ -225,31 +225,31 @@ flowchart LR
 
 ```mermaid
 sequenceDiagram
-  participant Py as train_serial.py (PC)
-  participant Ser as Serial USB @115200
-  participant Ar as Arduino/ESP32 (agente)
+  participant Py as train_serial.py no PC
+  participant Ser as Serial USB 115200 baud
+  participant Ar as Arduino ou ESP32 - agente
 
-  Py->>Ser: abre porta; espera "READY"
-  Ar-->>Ser: "READY" (boot)
-  Note over Ar: Q-table 8x3 zerada; ε=1.0
+  Py->>Ser: abre porta e aguarda READY
+  Ar-->>Ser: READY - boot concluido
+  Note over Ar: Q-table 8x3 zerada, epsilon = 1.0
 
-  loop cada episódio (200)
-    Py->>Ser: "R\n" (reset + decay ε)
-    Note over Ar: ε ← max(0.02, ε·0.99); zera prev_state
-    loop cada passo (até MAX_STEPS=1000)
-      Py->>Ser: "L,M,R,reward\n"
-      Ar->>Ar: state = (L<<2)|(M<<1)|R
-      Ar->>Ar: Q-update de (prev_state, prev_action) c/ reward
-      Ar->>Ar: ε-greedy → action (0/1/2)
-      Ar-->>Ser: "action\n"
+  loop cada episodio - 200 vezes
+    Py->>Ser: R + LF - reset e decay do epsilon
+    Note over Ar: decay do epsilon fator 0.99 min 0.02, zera prev_state
+    loop cada passo - ate MAX_STEPS 1000
+      Py->>Ser: L,M,R,reward + LF
+      Ar->>Ar: state = L*4 + M*2 + R
+      Ar->>Ar: Q-update em prev_state e prev_action com reward
+      Ar->>Ar: epsilon-greedy gera action 0/1/2
+      Ar-->>Ser: action + LF
       Ser-->>Py: action
-      Py->>Py: robot_step(action); read_sensors; compute_reward
+      Py->>Py: robot_step action, read_sensors, compute_reward
     end
   end
 
-  Py->>Ser: "Q\n" (solicita Q-table)
-  Ar-->>Ser: 8 linhas "s,Q0,Q1,Q2" + "END"
-  Py->>Ser: "E0\n" (modo greedy p/ demo)
+  Py->>Ser: Q + LF - solicita Q-table
+  Ar-->>Ser: 8 linhas s,Q0,Q1,Q2 + END
+  Py->>Ser: E0 + LF - modo greedy para demo
 ```
 
 ### 4.3 Protocolo serial (resumo)
