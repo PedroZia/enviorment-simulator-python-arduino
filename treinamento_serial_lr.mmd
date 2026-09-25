@@ -1,0 +1,26 @@
+flowchart LR
+    A(["INÍCIO"]) --> B["Conecta com o ESP32 via serial<br/>(espera o sinal READY)"]
+    B --> C["Gera a pista oval<br/>e posiciona o robô no início"]
+
+    subgraph TREINO["TREINAMENTO"]
+        direction TB
+        D["Para cada episódio (200)"] --> E["Envia R<br/>reseta o episódio no ESP32"]
+        E --> F["Posição inicial aleatória<br/>na pista"]
+        F --> G["Para cada passo (até 1000)"]
+        G --> H["Envia leituras dos sensores<br/>L,M,R + recompensa"]
+        H --> I["ESP32 escolhe a ação<br/>(0 esquerda, 1 reto, 2 direita)"]
+        I --> J["Move o robô conforme a ação"]
+        J --> K["Lê os 3 sensores<br/>e calcula a recompensa"]
+        K --> L{"Ainda na linha<br/>e passos < 1000?"}
+        L -- "Sim" --> G
+        L -- "Não" --> M["Fim do episódio:<br/>registra recompensa total"]
+        M --> N{"Faltam episódios?"}
+        N -- "Sim" --> D
+    end
+
+    N -- "Não" --> O["Pede a Q-table final ao ESP32"]
+    O --> P["Salva a Q-table<br/>e o histórico de recompensas"]
+    P --> Q["Demo: robô percorre a pista<br/>com política greedy (epsilon = 0)"]
+    Q --> R(["FIM"])
+
+    linkStyle default stroke-width:4px,stroke:#333
