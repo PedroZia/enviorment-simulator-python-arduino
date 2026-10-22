@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#e7e5de">
+  <title>Simulador de Linha — Pista para robô seguidor</title>
+  <meta name="description" content="Três retângulos, oito estados e uma pista na tela para treinar o robô seguidor de linha sem tirar o robô da bancada.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23e7e5de'/%3E%3Crect x='8' y='31' width='48' height='7' fill='%23000'/%3E%3Ccircle cx='20' cy='19' r='5' fill='%23de3b2f'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..800&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <a class="brand" href="#" aria-label="Simulador de Linha">
+        <span class="brand-mark" aria-hidden="true">
+          <span class="brand-line"></span>
+          <span class="brand-dot"></span>
+        </span>
+        <span class="brand-text">
+          <strong>Simulador de Linha</strong>
+          <span>Robô seguidor de linha / TCC</span>
+        </span>
+      </a>
+
+      <div class="status" aria-label="Estado atual dos sensores">
+        <span class="status-label">Estado</span>
+        <strong class="state-number" id="stateValue">0</strong>
+        <div class="sensor-chips" aria-hidden="true">
+          <span class="sensor-chip" data-chip="0">
+            <span class="chip-dot"></span>
+            <span class="chip-label">L</span>
+            <span class="chip-bit">0</span>
+          </span>
+          <span class="sensor-chip" data-chip="1">
+            <span class="chip-dot"></span>
+            <span class="chip-label">C</span>
+            <span class="chip-bit">0</span>
+          </span>
+          <span class="sensor-chip" data-chip="2">
+            <span class="chip-dot"></span>
+            <span class="chip-label">R</span>
+            <span class="chip-bit">0</span>
+          </span>
+        </div>
+        <span class="live-indicator" id="liveIndicator">
+          <i aria-hidden="true"></i>
+          <span>manual</span>
+        </span>
+      </div>
+
+      <div class="topbar-actions">
+        <button type="button" class="text-btn" id="btnHelp">Como usar</button>
+        <button type="button" class="text-btn text-btn-muted" id="btnReset">Restaurar</button>
+        <button type="button" class="btn-robot" id="btnRobotMode" title="Tela cheia, sem o painel (F)">
+          <span class="robot-dot" aria-hidden="true"></span>
+          Modo robô
+        </button>
+      </div>
+    </header>
+
+    <noscript><p class="noscript">Ative o JavaScript para usar o simulador.</p></noscript>
+
+    <main class="content">
+      <section class="hero" aria-labelledby="heroTitle">
+        <div class="hero-copy">
+          <h1 id="heroTitle">A linha se move.<br>O robô fica.</h1>
+          <p class="hero-lede">Três retângulos no lugar dos sensores. Oito estados para o Arduino aprender. Ajuste a posição, o tamanho e a cadência, e treine sem tirar o robô da bancada.</p>
+          <div class="hero-actions">
+            <button type="button" class="link-btn" data-adjust aria-controls="adjuster" aria-expanded="false">Ajustar valores</button>
+            <button type="button" class="link-btn link-btn-muted" id="btnHelpHero">Como usar</button>
+          </div>
+        </div>
+
+        <div class="hero-states">
+          <div class="section-head">
+            <h2>Os oito estados</h2>
+            <p>Preto é linha. Branco é branco.</p>
+          </div>
+
+          <div class="state-grid" id="stateButtons" role="group" aria-label="Aplicar estado dos sensores">
+            <button type="button" class="state-btn" data-state="0" aria-pressed="false">
+              <span class="state-code">000</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">0</span>
+            </button>
+            <button type="button" class="state-btn" data-state="1" aria-pressed="false">
+              <span class="state-code">001</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">1</span>
+            </button>
+            <button type="button" class="state-btn" data-state="2" aria-pressed="false">
+              <span class="state-code">010</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">2</span>
+            </button>
+            <button type="button" class="state-btn" data-state="3" aria-pressed="false">
+              <span class="state-code">011</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">3</span>
+            </button>
+            <button type="button" class="state-btn" data-state="4" aria-pressed="false">
+              <span class="state-code">100</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">4</span>
+            </button>
+            <button type="button" class="state-btn" data-state="5" aria-pressed="false">
+              <span class="state-code">101</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">5</span>
+            </button>
+            <button type="button" class="state-btn" data-state="6" aria-pressed="false">
+              <span class="state-code">110</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">6</span>
+            </button>
+            <button type="button" class="state-btn" data-state="7" aria-pressed="false">
+              <span class="state-code">111</span>
+              <span class="state-dots" aria-hidden="true"></span>
+              <span class="state-dec">7</span>
+            </button>
+          </div>
+
+          <p class="state-caption">L, C e R: preto vale 1, branco vale 0. O estado é a soma (L × 4) + (C × 2) + R.</p>
+        </div>
+      </section>
+
+      <section class="mode-bar" aria-label="Modo de operação">
+        <div class="mode-control-wrap">
+          <span class="field-label">Modo</span>
+          <div class="segmented" id="modeControl" role="group" aria-label="Modo de operação">
+            <span class="seg-indicator" aria-hidden="true"></span>
+            <button type="button" class="seg-btn is-active" data-mode="manual" aria-pressed="true">Manual</button>
+            <button type="button" class="seg-btn" data-mode="blink" aria-pressed="false">Piscar</button>
+            <button type="button" class="seg-btn" data-mode="sequence" aria-pressed="false">Sequência</button>
+          </div>
+        </div>
+
+        <div class="playback" id="playback">
+          <button type="button" class="play-btn" id="btnPlay" aria-pressed="true" aria-label="Pausar animação">
+            <span class="play-icon" aria-hidden="true"></span>
+          </button>
+          <span class="play-label" id="playLabel">Pausar</span>
+          <label class="inline-field" id="sequenceIntervalField">
+            <span class="field-label">Intervalo</span>
+            <input type="number" id="sequenceInterval" min="200" max="10000" step="50" value="800" inputmode="numeric">
+            <span class="unit">ms</span>
+          </label>
+        </div>
+
+        <label class="switch">
+          <input type="checkbox" id="showGuides" checked>
+          <span class="switch-track" aria-hidden="true"><span class="switch-thumb"></span></span>
+          <span>Guias</span>
+        </label>
+
+        <button type="button" class="adjust-btn" data-adjust aria-controls="adjuster" aria-expanded="false">
+          Ajustar valores
+        </button>
+      </section>
+
+      <footer class="page-footer">
+        <p>Simulador de pista para o TCC do robô seguidor de linha.</p>
+        <p>Use o modo robô com o robô sobre a tela, em zoom 100%.</p>
+      </footer>
+    </main>
+
+    <div class="stage-dock" id="stageDock">
+      <section class="adjuster" id="adjuster" aria-labelledby="adjusterTitle" hidden>
+        <div class="adjuster-inner">
+          <header class="adjuster-head">
+            <div>
+              <h2 id="adjusterTitle">Ajustes</h2>
+              <p>Arraste os retângulos na pista ou edite os valores.</p>
+            </div>
+            <div class="adjuster-actions">
+              <button type="button" class="text-btn text-btn-muted" id="btnResetAdjust">Restaurar</button>
+              <button type="button" class="text-btn" id="btnCloseAdjust">Fechar</button>
+            </div>
+          </header>
+
+          <div class="sensor-sheet adjuster-sheet">
+            <div class="sensor-columns" id="cards">
+              <article class="card sensor-column" data-rect="0">
+                <header class="sensor-head">
+                  <button type="button" class="live-dot" data-live="0" aria-label="Selecionar sensor esquerdo"></button>
+                  <div class="sensor-name">
+                    <h3>Esquerdo</h3>
+                    <span>Sensor L</span>
+                  </div>
+                  <span class="sensor-bit">0</span>
+                </header>
+
+                <div class="color-toggle" role="group" aria-label="Cor manual do sensor esquerdo">
+                  <button type="button" class="color-btn" data-color="on">Preto</button>
+                  <button type="button" class="color-btn" data-color="off">Branco</button>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field"><span class="field-label">X <span class="unit">px</span></span><input type="number" data-prop="x" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Y <span class="unit">px</span></span><input type="number" data-prop="y" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Largura <span class="unit">px</span></span><input type="number" data-prop="w" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Altura <span class="unit">px</span></span><input type="number" data-prop="h" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Período <span class="unit">ms</span></span><input type="number" data-prop="period" min="100" max="10000" step="50" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Fase <span class="unit">%</span></span><input type="number" data-prop="phase" min="0" max="100" step="1" inputmode="numeric"></label>
+                </div>
+              </article>
+
+              <article class="card sensor-column" data-rect="1">
+                <header class="sensor-head">
+                  <button type="button" class="live-dot" data-live="1" aria-label="Selecionar sensor central"></button>
+                  <div class="sensor-name">
+                    <h3>Centro</h3>
+                    <span>Sensor C</span>
+                  </div>
+                  <span class="sensor-bit">0</span>
+                </header>
+
+                <div class="color-toggle" role="group" aria-label="Cor manual do sensor central">
+                  <button type="button" class="color-btn" data-color="on">Preto</button>
+                  <button type="button" class="color-btn" data-color="off">Branco</button>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field"><span class="field-label">X <span class="unit">px</span></span><input type="number" data-prop="x" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Y <span class="unit">px</span></span><input type="number" data-prop="y" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Largura <span class="unit">px</span></span><input type="number" data-prop="w" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Altura <span class="unit">px</span></span><input type="number" data-prop="h" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Período <span class="unit">ms</span></span><input type="number" data-prop="period" min="100" max="10000" step="50" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Fase <span class="unit">%</span></span><input type="number" data-prop="phase" min="0" max="100" step="1" inputmode="numeric"></label>
+                </div>
+              </article>
+
+              <article class="card sensor-column" data-rect="2">
+                <header class="sensor-head">
+                  <button type="button" class="live-dot" data-live="2" aria-label="Selecionar sensor direito"></button>
+                  <div class="sensor-name">
+                    <h3>Direito</h3>
+                    <span>Sensor R</span>
+                  </div>
+                  <span class="sensor-bit">0</span>
+                </header>
+
+                <div class="color-toggle" role="group" aria-label="Cor manual do sensor direito">
+                  <button type="button" class="color-btn" data-color="on">Preto</button>
+                  <button type="button" class="color-btn" data-color="off">Branco</button>
+                </div>
+
+                <div class="field-grid">
+                  <label class="field"><span class="field-label">X <span class="unit">px</span></span><input type="number" data-prop="x" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Y <span class="unit">px</span></span><input type="number" data-prop="y" min="0" max="20000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Largura <span class="unit">px</span></span><input type="number" data-prop="w" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Altura <span class="unit">px</span></span><input type="number" data-prop="h" min="4" max="4000" step="1" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Período <span class="unit">ms</span></span><input type="number" data-prop="period" min="100" max="10000" step="50" inputmode="numeric"></label>
+                  <label class="field"><span class="field-label">Fase <span class="unit">%</span></span><input type="number" data-prop="phase" min="0" max="100" step="1" inputmode="numeric"></label>
+                </div>
+              </article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div class="stage-meta">
+        <span class="meta-item">Superfície <strong id="surfaceSize">—</strong></span>
+        <span class="meta-item meta-center">X/Y a partir do canto inferior esquerdo</span>
+        <div class="meta-right">
+          <span class="meta-item">Zoom 100%</span>
+          <button type="button" class="text-btn" data-adjust aria-controls="adjuster" aria-expanded="false">Ajustar</button>
+          <button type="button" class="text-btn" id="btnCenter">Centralizar</button>
+        </div>
+      </div>
+
+      <div class="stage-ruler" id="stageRuler" aria-hidden="true"></div>
+
+      <div class="stage" id="stage" aria-label="Palco branco com os três retângulos dos sensores">
+        <div class="rect" data-rect="0" aria-hidden="true"><span class="rect-handle" data-handle="se"></span></div>
+        <div class="rect" data-rect="1" aria-hidden="true"><span class="rect-handle" data-handle="se"></span></div>
+        <div class="rect" data-rect="2" aria-hidden="true"><span class="rect-handle" data-handle="se"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <button type="button" class="robot-exit" id="btnExitRobot" title="Sair do modo robô (Esc)">Sair do modo robô</button>
+
+  <dialog class="help-dialog" id="helpDialog">
+    <div class="help-inner">
+      <header class="help-head">
+        <h2>Como usar</h2>
+        <button type="button" class="text-btn" id="btnCloseHelp">Fechar</button>
+      </header>
+
+      <ol class="help-steps">
+        <li><strong>Posicione o robô.</strong> Coloque os três sensores IR sobre a pista branca, com o robô apoiado e as rodas fora do chão.</li>
+        <li><strong>Escolha um estado.</strong> Clique em uma das oito combinações ou deixe o site alternar no modo Piscar ou Sequência.</li>
+        <li><strong>Ajuste a pista.</strong> Abra Ajustar valores e edite X, Y, largura, altura, período e fase até cada sensor ler preto ou branco de forma estável.</li>
+        <li><strong>Ocupe a tela.</strong> Entre no modo robô para esconder o painel e deixar só a pista.</li>
+      </ol>
+
+      <p class="help-note">A pista é a própria tela. O Arduino lê os retângulos com os sensores IR; não é preciso conectar serial.</p>
+
+      <dl class="help-keys">
+        <div><dt>0 a 7</dt><dd>Aplica um estado</dd></div>
+        <div><dt>Espaço</dt><dd>Pausa ou continua</dd></div>
+        <div><dt>F</dt><dd>Entra ou sai do modo robô</dd></div>
+        <div><dt>Esc</dt><dd>Sai do modo robô</dd></div>
+      </dl>
+    </div>
+  </dialog>
+</body>
+</html>
