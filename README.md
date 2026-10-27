@@ -94,10 +94,11 @@ flowchart TD
   S([início do treinamento]) --> EPI(["episódio ep = 0..199"])
   EPI --> INIT["posição e θ aleatórios na pista<br/>idx = random; θ = tangente ± ruído"]
   INIT --> ST["read_sensors() → leituras<br/>state = encode_state(L,M,R)"]
-  ST --> CHOOSE["choose_action(state, q, ε)<br/>ε-greedy"]
+  ST --> EV["evento sintético: 5% dos passos centrados<br/>vira 101 (gap) ou 111 (linha larga)"]
+  EV --> CHOOSE["choose_action(state, q, ε)<br/>ε-greedy"]
   CHOOSE --> STEP["robot_step(x,y,θ, ação)<br/>θ += (ação-1)·TURN_RATE<br/>(x,y) += SPEED·(cosθ,sinθ)"]
   STEP --> NS["read_sensors() → next_readings<br/>next_state = encode_state(...)"]
-  NS --> RW["compute_reward(next_readings)<br/>c=1: +1.0 · l=1: −0.5 · r=1: −0.5<br/>(0,0,0): −3.0"]
+  NS --> RW["compute_reward(next_readings, ação, current)<br/>c=1: +1.0 · laterais: −0.5<br/>perdido/cruzamento: reto é recompensado"]
   RW --> QU["q_update — Bellman<br/>Q[s,a] += α·(r + γ·max<sub>a'</sub> Q[s',a'] − Q[s,a])<br/>α=0.1 · γ=0.9"]
   QU --> LOST{"perdeu a linha?<br/>(lost_steps ≥ 15 ou 000)"}
   LOST -->|não| ST
@@ -105,7 +106,7 @@ flowchart TD
   END --> DECAY["ε = max(0.02, ε · 0.99)"]
   DECAY --> NX{"ep < 200?"}
   NX -->|sim| EPI
-  NX -->|não| DEMO["demo (política greedy, ε=0)<br/>imprime Q-table em stdout"]
+  NX -->|não| DEMO["demo (política greedy, ε=0)<br/>salva snapshot com timestamp<br/>e imprime a Q-table"]
 ```
 
 ### 2.3 Detalhe do algoritmo Q-learning
@@ -116,17 +117,30 @@ flowchart TD
 
 - **Recompensa** (`compute_reward`):
 
-  | leitura | reward |
+  | situação | reward |
   |---|---|
   | centro `m=1` | `+1.0` |
   | esquerda `l=1` | `−0.5` |
   | direita `r=1` | `−0.5` |
-  | `(0,0,0)` (perdeu) | `−3.0` |
+  | `(0,0,0)` perdido, indo reto | `−1.0` |
+  | `(0,0,0)` perdido, virando | `−3.0` |
+  | perdido e escolheu virar | `−3.0` extra |
+  | `101`/`111` e escolheu reto | `+2.0` extra |
+  | `101`/`111` e escolheu virar | `−2.0` extra |
+
+- **Estados de cruzamento:** `101` (gap central) e `111` (linha larga) não
+  aparecem na pista oval. Para o agente aprender a política deles, o treino
+  injeta esses estados em 5% dos passos em que o robô está centrado (`010`),
+  mantendo a dinâmica real da pista.
 
 - **Atualização (Bellman):**
   `Q[s,a] ← Q[s,a] + α·( r + γ·max_a' Q[s',a'] − Q[s,a] )`
 
 - **Q-table:** 8 (estados) × 3 (ações), iniciada em zero.
+
+- **Snapshot:** ao final do treino, `sim.py` grava
+  `snapshots/qtable_AAAAMMDD_HHMMSS_epNNNN.txt`, sem sobrescrever execuções
+  anteriores.
 
 ---
 

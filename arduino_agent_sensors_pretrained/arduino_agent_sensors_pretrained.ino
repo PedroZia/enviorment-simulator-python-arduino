@@ -2,8 +2,9 @@
  * arduino_agent_sensors_pretrained.ino - standalone line follower with a
  * PRE-TRAINED Q-table (follows the learned policy from the first step).
  *
- * Table source: snapshots/qtable_ep_0200.txt (200 episodes trained via
- * train_serial.py + ESP32 agent). epsilon = 0, so no exploration.
+ * Table source: snapshots/qtable_20261027_190641_ep0200.txt (200 episodes
+ * trained via sim.py). Policy: 000/010/101/111 -> straight, 001/011 -> right,
+ * 100/110 -> left. epsilon = 0, so no exploration.
  *
  *   LEARN_ONBOARD 0 -> frozen table (pure test/demo, no Q-updates)
  *   LEARN_ONBOARD 1 -> keeps learning from the pre-trained values
@@ -43,18 +44,18 @@
 #define N_STATES  8
 #define N_ACTIONS 3   // 0=left, 1=straight, 2=right
 
-// Pre-trained Q-table from snapshots/qtable_ep_0200.txt
+// Pre-trained Q-table from snapshots/qtable_20261027_190641_ep0200.txt
 // (state = L<<2 | C<<1 | R; the snapshot marks the best action with '*')
 float q[N_STATES][N_ACTIONS] = {
   //  [LCR]      left     straight     right
-  { -9.23,   -7.52,   -8.83 },  // [000] -> straight
-  { -1.39,   +6.67,   +7.83 },  // [001] -> right
-  { +7.71,   +8.96,   +8.35 },  // [010] -> straight
-  { +6.83,   +8.59,   +9.04 },  // [011] -> right
-  { +8.38,   +6.35,   -0.08 },  // [100] -> left
-  { +0.00,   +1.00,   +0.00 },  // [101] -> straight
-  { +9.01,   +8.61,   +7.21 },  // [110] -> left
-  { +3.42,   +5.74,   +2.46 },  // [111] -> straight
+  { -14.25,   -9.86,  -14.31 },  // [000] -> straight
+  { -1.82,   +6.28,   +8.34 },  // [001] -> right
+  { +8.12,   +9.21,   +8.97 },  // [010] -> straight
+  { +6.93,   +8.49,   +9.37 },  // [011] -> right
+  { +8.98,   +5.50,   -2.69 },  // [100] -> left
+  { +5.90,  +11.41,   +5.85 },  // [101] -> straight
+  { +9.43,   +8.72,   +7.23 },  // [110] -> left
+  { +5.82,  +11.41,   +6.05 },  // [111] -> straight
 };
 
 const float alpha   = 0.1;

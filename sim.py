@@ -2,8 +2,11 @@
 Line follower robot simulator with Q-learning.
 ponytail: single file, stdlib only, no GUI, no overengineering.
 """
+import datetime
 import math
+import os
 import random
+import sys
 
 # ===================== CONFIG =====================
 
@@ -28,6 +31,18 @@ EPS_DECAY = 0.99
 
 N_ACTIONS = 3         # 0=left, 1=straight, 2=right
 N_STATES = 8          # 3 binary sensors -> 0..7
+
+# Ambiguous states: crossing with a central gap and thick/wide line.
+# On the plain oval they are never seen, so the trainer injects them as
+# synthetic events (the robot keeps following the real line meanwhile).
+CROSS_STATES = ((1, 0, 1), (1, 1, 1))
+CROSS_INJECT_PROB = 0.05
+CROSS_STRAIGHT_BONUS = 2.0
+CROSS_TURN_PENALTY = -2.0
+
+# Lost-line recovery: keep searching straight instead of turning at random.
+# The straight reward stays negative so losing the line is never attractive.
+LOST_TURN_PENALTY = -3.0
 
 
 # ===================== TRACK =====================
@@ -98,17 +113,33 @@ def read_sensors(x, y, theta, track):
     )
 
 
-def compute_reward(readings):
+def compute_reward(readings, action=None, current=None):
+    """Reward for reaching `readings` with `action`.
+
+    `current` is the state the action was taken from. It is used to teach the
+    ambiguous crossing/wide states to go straight; when omitted the reached
+    state itself is used.
+    """
     l, m, r = readings
     if (l, m, r) == (0, 0, 0):
-        return -3.0
-    reward = 0.0
-    if m == 1:
-        reward += 1.0
-    if l == 1:
-        reward -= 0.5
-    if r == 1:
-        reward -= 0.5
+        # Lost the line: going straight is the best search move.
+        reward = -1.0 if action == 1 else -3.0
+    else:
+        reward = 0.0
+        if m == 1:
+            reward += 1.0
+        if l == 1:
+            reward -= 0.5
+        if r == 1:
+            reward -= 0.5
+
+    src = readings if current is None else current
+    if action is not None:
+        if src == (0, 0, 0):
+            if action != 1:
+                reward += LOST_TURN_PENALTY
+        elif src in CROSS_STATES:
+            reward += CROSS_STRAIGHT_BONUS if action == 1 else CROSS_TURN_PENALTY
     return reward
 
 
@@ -156,13 +187,21 @@ def train(track, episodes=200):
         for _ in range(MAX_STEPS):
             readings = read_sensors(x, y, theta, track)
             state = encode_state(*readings)
+
+            # Synthetic crossing/wide-line event: pretend the sensors see a
+            # gap or a thick line while the robot is centred on the real one.
+            current = readings
+            if readings == (0, 1, 0) and random.random() < CROSS_INJECT_PROB:
+                current = random.choice(CROSS_STATES)
+                state = encode_state(*current)
+
             action = choose_action(state, q, epsilon)
 
             x, y, theta = robot_step(x, y, theta, action)
 
             next_readings = read_sensors(x, y, theta, track)
             next_state = encode_state(*next_readings)
-            reward = compute_reward(next_readings)
+            reward = compute_reward(next_readings, action, current)
 
             q_update(q, state, action, reward, next_state)
 
@@ -219,7 +258,6 @@ def demo(track, q):
 
 def print_qtable(q):
     print('\n--- Q-TABLE (best action marked) ---')
-    names = [' L', ' S', ' R']
     for s in range(N_STATES):
         l, m, r = (s >> 2) & 1, (s >> 1) & 1, s & 1
         best = max(range(N_ACTIONS), key=lambda a: q[s][a])
@@ -229,15 +267,58 @@ def print_qtable(q):
         print(f'  [{l}{m}{r}] -> {vals}')
 
 
+def format_qtable(q, episode=None):
+    lines = []
+    if episode is not None:
+        lines.append(f'episode {episode}')
+    for s in range(N_STATES):
+        l, m, r = (s >> 2) & 1, (s >> 1) & 1, s & 1
+        best = max(range(N_ACTIONS), key=lambda a: q[s][a])
+        vals = ' '.join(
+            f'{q[s][a]:+7.2f}{"*" if a == best else " "}' for a in range(N_ACTIONS)
+        )
+        lines.append(f'  [{l}{m}{r}] -> {vals}')
+    return '\n'.join(lines)
+
+
+def save_qtable(q, episode=None, folder='snapshots', stamp=None):
+    """Save a timestamped snapshot so older runs are never overwritten."""
+    os.makedirs(folder, exist_ok=True)
+    stamp = stamp or datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    name = f'qtable_{stamp}'
+    if episode is not None:
+        name += f'_ep{episode:04d}'
+    path = os.path.join(folder, name + '.txt')
+    with open(path, 'w') as f:
+        f.write(format_qtable(q, episode))
+    return path
+
+
 if __name__ == '__main__':
-    random.seed(42)
+    episodes = 200
+    seed = 42
+    for arg in sys.argv[1:]:
+        if arg.startswith('--episodes='):
+            episodes = int(arg.split('=', 1)[1])
+        elif arg.startswith('--seed='):
+            seed = int(arg.split('=', 1)[1])
+        else:
+            print(f'unknown option: {arg}')
+            sys.exit(2)
+    random.seed(seed)
+
     track = generate_track()
     print(f'Track: {len(track)} pts | oval {TRACK_L*2:.0f}x{TRACK_R*2:.0f} '
           f'| line_w={LINE_HALF_WIDTH*2:.1f} sensor_a={math.degrees(SENSOR_ANGLE):.0f}deg')
     print(f'States: {N_STATES} | Actions: {N_ACTIONS} | '
           f'a={ALPHA} g={GAMMA} eps_d={EPS_DECAY}')
+    print(f'Crossing events: {CROSS_INJECT_PROB:.0%} of centred steps')
     print()
 
-    q, history = train(track)
+    q, history = train(track, episodes=episodes)
     print_qtable(q)
+
+    path = save_qtable(q, episode=episodes)
+    print(f'\nSnapshot saved: {path}')
+
     demo(track, q)
