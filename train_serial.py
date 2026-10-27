@@ -1,8 +1,9 @@
 """
-Train line follower using ESP32 as Q-learning agent via serial.
+Train line follower using ESP32/Arduino as Q-learning agent via serial.
 ponytail: environment simulator only — track, robot, sensors, rewards.
-           All Q-learning runs on ESP32.
+           All Q-learning runs on the MCU.
 """
+import datetime
 import math
 import os
 import random
@@ -31,8 +32,20 @@ LOST_LIMIT = 15
 EPISODES = 200
 EPS_DECAY = 0.99   # ponytail: Python needs this for progress display only
 
-PORT = 'COM3'      # ponytail: change to your ESP32 port
+PORT = 'COM3'      # ponytail: change to your ESP32/Arduino port
 BAUD = 115200
+
+# Ambiguous states: crossing with a central gap and thick/wide line.
+# They never appear on the plain oval, so the trainer injects them as
+# synthetic events; the MCU keeps doing all Q-learning.
+CROSS_STATES = ((1, 0, 1), (1, 1, 1))
+CROSS_INJECT_PROB = 0.05
+CROSS_STRAIGHT_BONUS = 2.0
+CROSS_TURN_PENALTY = -2.0
+
+# Lost-line recovery: keep searching straight instead of turning at random.
+# The straight reward stays negative so losing the line is never attractive.
+LOST_TURN_PENALTY = -3.0
 
 
 # ===================== TRACK =====================
@@ -102,17 +115,37 @@ def read_sensors(x, y, theta, track):
     )
 
 
-def compute_reward(readings):
+def encode_state(left, mid, right):
+    return (left << 2) | (mid << 1) | right
+
+
+def compute_reward(readings, action=None, current=None):
+    """Reward for reaching `readings` with `action`.
+
+    `current` is the state the action was taken from. It is used to teach the
+    ambiguous crossing/wide states to go straight; when omitted the reached
+    state itself is used.
+    """
     l, m, r = readings
     if (l, m, r) == (0, 0, 0):
-        return -3.0
-    reward = 0.0
-    if m == 1:
-        reward += 1.0
-    if l == 1:
-        reward -= 0.5
-    if r == 1:
-        reward -= 0.5
+        # Lost the line: going straight is the best search move.
+        reward = -1.0 if action == 1 else -3.0
+    else:
+        reward = 0.0
+        if m == 1:
+            reward += 1.0
+        if l == 1:
+            reward -= 0.5
+        if r == 1:
+            reward -= 0.5
+
+    src = readings if current is None else current
+    if action is not None:
+        if src == (0, 0, 0):
+            if action != 1:
+                reward += LOST_TURN_PENALTY
+        elif src in CROSS_STATES:
+            reward += CROSS_STRAIGHT_BONUS if action == 1 else CROSS_TURN_PENALTY
     return reward
 
 
@@ -138,9 +171,19 @@ def connect_serial(port, baud, retries=10):
 
 
 def send_step(ser, readings, reward):
-    """Send sensor state and previous reward; return ESP32's action."""
+    """Send sensor state and previous reward; return MCU's action."""
     msg = f'{readings[0]},{readings[1]},{readings[2]},{reward}\n'
     ser.write(msg.encode())
+    ser.flush()
+    resp = ser.readline().decode('utf-8', errors='ignore').strip()
+    if resp == '':
+        return None
+    return int(resp)
+
+
+def send_inject(ser, state):
+    """Ask the MCU to pick an action for a synthetic state (no Q-update)."""
+    ser.write(f'I{state}\n'.encode())
     ser.flush()
     resp = ser.readline().decode('utf-8', errors='ignore').strip()
     if resp == '':
@@ -191,9 +234,11 @@ def format_qtable(q, episode=None):
     return '\n'.join(lines)
 
 
-def save_qtable(q, episode, folder='snapshots'):
+def save_qtable(q, episode, folder='snapshots', stamp=None):
+    """Save a timestamped snapshot so older runs are never overwritten."""
     os.makedirs(folder, exist_ok=True)
-    path = os.path.join(folder, f'qtable_ep_{episode:04d}.txt')
+    stamp = stamp or datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    path = os.path.join(folder, f'qtable_{stamp}_ep{episode:04d}.txt')
     with open(path, 'w') as f:
         f.write(format_qtable(q, episode))
     return path
@@ -225,6 +270,11 @@ class FakeESP32:
         self.prev_action = -1
         self._buf = []  # ponytail: buffer for simulated serial reads
 
+    def _choose_action(self, state):
+        if random.random() < self.epsilon:
+            return random.randrange(N_ACTIONS)
+        return max(range(N_ACTIONS), key=lambda a: self.q[state][a])
+
     def write(self, data):
         msg = data.decode() if isinstance(data, bytes) else data
         msg = msg.strip()
@@ -239,6 +289,13 @@ class FakeESP32:
             self._buf.append('END')
         elif msg.startswith('E'):
             self.epsilon = float(msg[1:]) if len(msg) > 1 else 0.0
+        elif msg.startswith('I'):
+            # Synthetic state: choose an action, but do not update Q.
+            state = int(msg[1:]) if len(msg) > 1 else 0
+            action = self._choose_action(state)
+            self._buf.append(str(action))
+            self.prev_state = state
+            self.prev_action = action
         else:
             parts = msg.split(',')
             if len(parts) == 4:
@@ -249,8 +306,7 @@ class FakeESP32:
                     best_next = max(self.q[state])
                     td = reward + GAMMA * best_next - self.q[self.prev_state][self.prev_action]
                     self.q[self.prev_state][self.prev_action] += ALPHA * td
-                action = random.randrange(N_ACTIONS) if random.random() < self.epsilon else \
-                         max(range(N_ACTIONS), key=lambda a: self.q[state][a])
+                action = self._choose_action(state)
                 self._buf.append(str(action))
                 self.prev_state = state
                 self.prev_action = action
@@ -270,7 +326,7 @@ class FakeESP32:
 
 # ===================== TRAINING =====================
 
-def train(track, ser, episodes=EPISODES, save_interval=0):
+def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
     n = len(track)
     reward_log = []
 
@@ -280,7 +336,7 @@ def train(track, ser, episodes=EPISODES, save_interval=0):
         # ponytail: save Q-table snapshot between episodes (after reset, before first step)
         if save_interval > 0 and ep > 0 and ep % save_interval == 0:
             q = get_qtable(ser)
-            path = save_qtable(q, ep)
+            path = save_qtable(q, ep, stamp=stamp)
             print(f'  [snapshot saved: {path}]')
 
         idx = random.randrange(n)
@@ -294,7 +350,22 @@ def train(track, ser, episodes=EPISODES, save_interval=0):
         readings = read_sensors(x, y, theta, track)
 
         for step in range(MAX_STEPS):
-            action = send_step(ser, readings, prev_reward)
+            current = readings
+            action = None
+
+            # Synthetic crossing/wide-line event. First send the real step so
+            # the previous transition bootstraps from the real next state,
+            # then let the MCU pick an action for the synthetic state. The
+            # 'I' command does not update Q, only prev_state/prev_action.
+            if readings == (0, 1, 0) and random.random() < CROSS_INJECT_PROB:
+                current = random.choice(CROSS_STATES)
+                if send_step(ser, readings, prev_reward) is None:
+                    print(f'  [serial timeout at step {step}]')
+                    break
+                action = send_inject(ser, encode_state(*current))
+            else:
+                action = send_step(ser, readings, prev_reward)
+
             if action is None:
                 print(f'  [serial timeout at step {step}]')
                 break
@@ -302,7 +373,7 @@ def train(track, ser, episodes=EPISODES, save_interval=0):
             x, y, theta = robot_step(x, y, theta, action)
 
             next_readings = read_sensors(x, y, theta, track)
-            prev_reward = compute_reward(next_readings)
+            prev_reward = compute_reward(next_readings, action, current)
             total_reward += prev_reward
 
             if next_readings == (0, 0, 0):
@@ -355,7 +426,7 @@ def demo(track, ser):
 
         x, y, theta = robot_step(x, y, theta, action)
         next_readings = read_sensors(x, y, theta, track)
-        prev_reward = compute_reward(next_readings)
+        prev_reward = compute_reward(next_readings, action, readings)
 
         if next_readings == (0, 0, 0):
             print(f'  {step:4d} | [000] | LOST')
@@ -367,20 +438,32 @@ def demo(track, ser):
 # ===================== MAIN =====================
 
 if __name__ == '__main__':
-    fake_mode = '--fake' in sys.argv
+    fake_mode = False
     save_interval = 0
-    for arg in sys.argv:
+    episodes = EPISODES
+    seed = 42
+    for arg in sys.argv[1:]:
         if arg.startswith('--save='):
-            save_interval = int(arg.split('=')[1])
+            save_interval = int(arg.split('=', 1)[1])
         elif arg == '--save':
             save_interval = 10  # default every 10 episodes
+        elif arg == '--fake':
+            fake_mode = True
+        elif arg.startswith('--episodes='):
+            episodes = int(arg.split('=', 1)[1])
+        elif arg.startswith('--seed='):
+            seed = int(arg.split('=', 1)[1])
+        elif arg.startswith('--'):
+            print(f'unknown option: {arg}')
+            sys.exit(2)
+        else:
+            PORT = arg
 
-    if len(sys.argv) > 1 and sys.argv[1] not in ('--fake', '--save') and not sys.argv[1].startswith('--save='):
-        PORT = sys.argv[1]
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    print(f'Line Follower - ESP32 Agent Trainer')
+    print('Line Follower - MCU Agent Trainer')
     if fake_mode:
-        print(f'Mode: LOCAL (--fake)')
+        print('Mode: LOCAL (--fake)')
         ser = FakeESP32()
     else:
         if serial is None:
@@ -389,20 +472,22 @@ if __name__ == '__main__':
         print(f'Port: {PORT} | Baud: {BAUD}')
         ser = connect_serial(PORT, BAUD)
 
-    random.seed(42)
+    random.seed(seed)
     track = generate_track()
     print(f'Track: {len(track)} pts | oval {TRACK_L*2:.0f}x{TRACK_R*2:.0f}')
-    print(f'Episodes: {EPISODES} | Max steps: {MAX_STEPS}')
+    print(f'Episodes: {episodes} | Max steps: {MAX_STEPS} | seed: {seed}')
     if save_interval:
         print(f'Saving Q-table snapshots every {save_interval} episodes -> snapshots/')
     print()
 
+    history = []
     try:
-        history = train(track, ser, episodes=EPISODES, save_interval=save_interval)
+        history = train(track, ser, episodes=episodes,
+                        save_interval=save_interval, stamp=stamp)
     except KeyboardInterrupt:
         print('\nInterrupted.')
 
-    print('\nFetching Q-table from ESP32...')
+    print('\nFetching Q-table from MCU...')
     q = get_qtable(ser)
 
     print('\n--- Q-TABLE ---')
@@ -413,11 +498,11 @@ if __name__ == '__main__':
         print(f'  [{l}{m}{r}] -> {vals}')
 
     # save final Q-table
-    final_path = save_qtable(q, EPISODES)
+    final_path = save_qtable(q, episodes, stamp=stamp)
     print(f'\nFinal Q-table saved: {final_path}')
 
-    # save history
-    hist_path = save_history(history)
+    # save history with the same timestamp (never overwrite old runs)
+    hist_path = save_history(history, f'history_{stamp}.csv')
     print(f'Reward history saved: {hist_path}')
 
     demo(track, ser)

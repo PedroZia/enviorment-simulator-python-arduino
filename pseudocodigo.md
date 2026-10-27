@@ -19,6 +19,7 @@ Convenção comum: leituras `0` = branco (fora da linha), `1` = preto (sobre a l
 | Python → MCU | `Q` | pede dump da Q-table |
 | MCU → Python | `s,Q0,Q1,Q2` ×8 + `END` | conteúdo da Q-table 8×3 |
 | Python → MCU | `E<valor>` | fixa ε (`E0` = greedy) |
+| Python → MCU | `I<estado>` | escolhe ação para um estado sintético (101/111) sem Q-update |
 | MCU → Python | `READY` | boot concluído |
 
 ---
@@ -41,6 +42,12 @@ VARIÁVEIS GLOBAIS:
     prev_state  ← -1               // -1 = nenhum passo anterior
     prev_action ← -1
 
+FUNÇÃO escolhe_acao_epsilon_greedy(state):
+    SE aleatório[0,1) < epsilon:
+        RETORNA aleatório em 0..2                      // explora
+    SENÃO:
+        RETORNA argmáximo_a( q[state][a] )             // explota
+
 FUNÇÃO processar_linha(linha):
     SE linha == "R":                                    // reset de episódio
         epsilon ← máximo(EPS_MIN, epsilon × EPS_DECAY)
@@ -58,6 +65,14 @@ FUNÇÃO processar_linha(linha):
         epsilon ← valor_float(linha sem o "E")          // "E0" = greedy
         RETORNA
 
+    SE linha começa com "I":                            // estado sintético 101/111
+        state ← inteiro(linha sem o "I")
+        action ← escolhe_acao_epsilon_greedy(state)     // NÃO atualiza q
+        envia_serial(action)
+        prev_state  ← state
+        prev_action ← action
+        RETORNA
+
     // passo normal: "L,M,R,reward"
     separa(linha, ",") em L, M, R, reward
     state ← (L << 2) | (M << 1) | R                     // codifica leituras em 0..7
@@ -69,10 +84,7 @@ FUNÇÃO processar_linha(linha):
             + ALPHA × (reward + GAMMA × best_next − q[prev_state][prev_action])
 
     // seleção de ação ε-greedy para o estado atual
-    SE aleatório[0,1) < epsilon:
-        action ← aleatório em 0..2                      // explora
-    SENÃO:
-        action ← argmáximo_a( q[state][a] )             // explota
+    action ← escolhe_acao_epsilon_greedy(state)
 
     envia_serial(action)                                // "action\n" ao PC
 
@@ -134,12 +146,21 @@ FUNÇÃO read_sensors(x, y, θ, pista):
         leitura ← 1 SE dist_to_track(ponto, pista) < LINE_HALF_WIDTH SENÃO 0
     RETORNA (L, M, R)                       // L = esquerdo, M = central, R = direito
 
-FUNÇÃO compute_reward(L, M, R):
-    SE (L, M, R) == (0, 0, 0): RETORNA −3.0            // perdeu a linha
-    recompensa ← 0.0
-    SE M == 1: recompensa ← recompensa + 1.0           // central sobre a linha
-    SE L == 1: recompensa ← recompensa − 0.5           // lateral esquerdo ativo
-    SE R == 1: recompensa ← recompensa − 0.5           // lateral direito ativo
+FUNÇÃO compute_reward(L, M, R, ação = nulo, atual = nulo):
+    SE (L, M, R) == (0, 0, 0):                         // perdeu a linha
+        recompensa ← −1.0 SE ação == 1 SENÃO −3.0      // reto é a melhor busca
+    SENÃO:
+        recompensa ← 0.0
+        SE M == 1: recompensa ← recompensa + 1.0       // central sobre a linha
+        SE L == 1: recompensa ← recompensa − 0.5       // lateral esquerdo ativo
+        SE R == 1: recompensa ← recompensa − 0.5       // lateral direito ativo
+
+    origem ← atual SE atual ≠ nulo SENÃO (L, M, R)
+    SE ação ≠ nulo:
+        SE origem == (0, 0, 0) E ação ≠ 1:
+            recompensa ← recompensa − 3.0              // não sai perdido virando
+        SENÃO SE origem ∈ {(1,0,1), (1,1,1)}:
+            recompensa ← recompensa + 2.0 SE ação == 1 SENÃO −2.0
     RETORNA recompensa
 
 // ---------- camada serial ----------
@@ -157,6 +178,11 @@ FUNÇÃO send_step(conexão, leituras, reward):
     envia "L,M,R,reward\n"
     aguarda a linha de resposta
     RETORNA a ação (0/1/2) — ou vazio em caso de timeout
+
+FUNÇÃO send_inject(conexão, estado):
+    envia "I<estado>\n"                            // 101 ou 111 sintético
+    aguarda a linha de resposta
+    RETORNA a ação (0/1/2) — sem Q-update na MCU
 
 FUNÇÃO reset_episodio(conexão):
     envia "R\n"      // MCU aplica o decaimento de ε e zera prev_state/prev_action
@@ -185,12 +211,24 @@ FUNÇÃO train(pista, conexão, episódios = 200):
         leituras ← read_sensors(x, y, θ, pista)
 
         PARA passo em 1..MAX_STEPS:
-            ação ← send_step(conexão, leituras, reward_anterior)
+            atual ← leituras
+
+            SE leituras == (0, 1, 0) E aleatório[0,1) < 0.05:
+                atual ← escolhe aleatoriamente entre (1,0,1) e (1,1,1)
+                // 1) passo real: atualiza a transição anterior com o estado
+                //    real e mantém o bootstrap correto
+                send_step(conexão, leituras, reward_anterior)
+                // 2) a MCU escolhe a ação para o estado sintético,
+                //    sem Q-update
+                ação ← send_inject(conexão, codifica(atual))
+            SENÃO:
+                ação ← send_step(conexão, leituras, reward_anterior)
+
             SE timeout serial: encerra o episódio
 
             (x, y, θ) ← robot_step(x, y, θ, ação)
             novas_leituras ← read_sensors(x, y, θ, pista)
-            reward_anterior ← compute_reward(novas_leituras)
+            reward_anterior ← compute_reward(novas_leituras, ação, atual)
             recompensa_total ← recompensa_total + reward_anterior
 
             SE novas_leituras == (0, 0, 0):
@@ -207,15 +245,15 @@ FUNÇÃO train(pista, conexão, episódios = 200):
 
 // ---------- saída (arquivos gerados) ----------
 
-FUNÇÃO salvar_qtable(q, episódio = 200):
+FUNÇÃO salvar_qtable(q, episódio = 200, timestamp):
     cria o diretório "snapshots/" se não existir
-    escreve o arquivo "snapshots/qtable_ep_0200.txt":
+    escreve "snapshots/qtable_<AAAAMMDD_HHMMSS>_ep0200.txt":
         cabeçalho "episode 200"
         8 linhas "[LMR] -> Q0  Q1  Q2", com a melhor ação de cada estado
         marcada com "*"
 
-FUNÇÃO salvar_historico(histórico):
-    escreve "history.csv":
+FUNÇÃO salvar_historico(histórico, timestamp):
+    escreve "history_<AAAAMMDD_HHMMSS>.csv":
         cabeçalho "episode,reward"
         1 linha por episódio: "número,recompensa_total"
 
@@ -227,6 +265,8 @@ SE modo --fake:                                    // sem hardware
                                                    //   "R" → decai ε, zera passo anterior
                                                    //   "Q" → envia 8× "s,Q0,Q1,Q2" + "END"
                                                    //   "E<ε>" → fixa ε
+                                                   //   "I<estado>" → ε-greedy para
+                                                   //     estado sintético, sem update
                                                    //   "L,M,R,reward" → Bellman +
                                                    //     ε-greedy + responde "action"
 SENÃO:
@@ -236,15 +276,16 @@ SENÃO:
 
 PRINCIPAL:
     define a semente do gerador aleatório (reprodutibilidade)
+    timestamp ← data/hora atual (AAAAMMDD_HHMMSS)
     pista ← generate_track()
     conexão ← (modo --fake ou serial real, conforme acima)
 
-    histórico ← train(pista, conexão, 200 episódios)
+    histórico ← train(pista, conexão, 200 episódios, timestamp)
 
     q ← get_qtable(conexão)                        // Q-table final
     imprime a Q-table 8×3 (melhor ação de cada estado)
-    salvar_qtable(q, 200)                          // snapshots/qtable_ep_0200.txt
-    salvar_historico(histórico)                    // history.csv
+    salvar_qtable(q, 200, timestamp)               // qtable_<timestamp>_ep0200.txt
+    salvar_historico(histórico, timestamp)         // history_<timestamp>.csv
 
     set_epsilon(conexão, 0)                        // demo greedy (ε = 0)
     demo: 1 episódio (até 400 passos ou perda da linha)

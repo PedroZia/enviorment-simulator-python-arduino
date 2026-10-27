@@ -194,9 +194,9 @@ flowchart TD
   DK --> A
 ```
 
-### 3.3 Detalhe do algoritmo (igual ao Modo 2, mas embarcado)
+### 3.3 Detalhe do algoritmo (mesmo Q-learning do Modo 2, mas embarcado)
 
-- **Recompensa** (idêntica ao `sim.py`): `c=1: +1.0`, `l=1: −0.5`, `r=1: −0.5`, `000: −3.0`
+- **Recompensa do firmware onboard:** `c=1: +1.0`, `l=1: −0.5`, `r=1: −0.5`, `000: −3.0`. O `sim.py` e o `train_serial.py` usam uma versão moldada (reto no perdido/cruzamento), mas o firmware autônomo mantém a recompensa simples.
 - **Q-update:** `Q[s,a] += α·(r + γ·max_a' Q[s',a'] − Q[s,a])`, com `α=0.1`, `γ=0.9`
 - **Epsilon-greedy** com decaimento automático a cada `DECAY_STEPS = 500`: `ε ← max(0.02, ε · 0.995)`
 - **Passo físico:** cada ação dura `DELAY_MS = 100` — com pulsos curtos (~60 ms, testado em bancada) os motores com engrenagem não respondem a tempo, as ações se anulam e o robô "só anda pra frente" (o aprendizado não vê o efeito de cada ação)
@@ -206,7 +206,7 @@ flowchart TD
 
 ## Modo 4 — Arduino + Simulação (validação da Q-table via serial)
 
-Ambiente simulado no PC (`train_serial.py`), “cérebro” Q-learning no Arduino/ESP32 (`arduino_agent.ino` / `esp32_agent.ino`). A Q-table vive na MCU; o PC só envia leituras e recompensa e recebe a ação de volta. Útil para **validar a Q-table em hardware real** antes de ir para o robô autônomo.
+Ambiente simulado no PC (`train_serial.py`), “cérebro” Q-learning no Arduino/ESP32 (`arduino_agent.ino` / `esp32_agent.ino`). A Q-table vive na MCU; o PC só envia leituras e recompensa e recebe a ação de volta. O treino usa a **mesma recompensa moldada do `sim.py`** e gera snapshots com timestamp — útil para **treinar/validar a Q-table em hardware real** antes de ir para o robô autônomo.
 
 ### 4.1 Diagrama de blocos (divisão de responsabilidades)
 
@@ -214,7 +214,7 @@ Ambiente simulado no PC (`train_serial.py`), “cérebro” Q-learning no Arduin
 flowchart LR
   subgraph PY["PC — train_serial.py (APENAS AMBIENTE)"]
     TR["AMBIENTE simulado<br/>generate_track() · robot_step()<br/>read_sensors() · compute_reward()"]
-    PROT["Camada serial<br/>envia 'L,M,R,reward'<br/>recebe 'action'"]
+    PROT["Camada serial<br/>envia 'L,M,R,reward' e 'I&lt;estado&gt;'<br/>recebe 'action'"]
   end
   SER[("Serial USB<br/>115200 baud")]
   subgraph ARD["Arduino/ESP32 — *_agent.ino (APENAS AGENTE Q-learning)"]
@@ -260,6 +260,11 @@ sequenceDiagram
       Ar-->>Ser: action + LF
       Ser-->>Py: action
       Py->>Py: robot_step action, read_sensors, compute_reward
+      opt 5% dos passos centrados - evento 101/111
+        Note over Py,Ar: o passo real acima ja atualizou Q; agora escolhe a acao sintetica
+        Py->>Ser: I&lt;estado&gt; + LF - acao para 101/111, sem Q-update
+        Ar-->>Ser: action + LF
+      end
     end
   end
 
@@ -278,14 +283,18 @@ sequenceDiagram
 | Python → Arduino | `Q\n` | pede dump da Q-table |
 | Arduino → Python | `s,Q0,Q1,Q2` ×8 + `END` | conteúdo da Q-table 8x3 |
 | Python → Arduino | `E<valor>\n` | fixa ε (`E0` = greedy) |
+| Python → Arduino | `I<estado>\n` | escolhe ação para um estado sintético (101/111) **sem** Q-update; usado nos eventos de cruzamento |
 | Arduino → Python | `READY` | boot concluído |
 
-### 4.4 Q-learning no Arduino (idêntico ao Modo 3)
+### 4.4 Q-learning no Arduino (mesmo do Modo 2, rodando na MCU)
 
 - Estado `s = (L<<2)|(M<<1)|R`, ações `0/1/2`, Q-table **8x3 zerada** na MCU.
 - Q-update de Bellman: `Q[prev_state][prev_action] += α·(reward + γ·max Q[state][·] − Q[prev_state][prev_action])`, `α=0.1`, `γ=0.9`.
 - ε-greedy: com prob. `ε` ação aleatória; senão `argmax_a Q[state][a]`.
 - Decay de ε aplicado no comando `R` (a cada episódio): `ε ← max(0.02, ε·0.99)`.
+- **Recompensa moldada** (igual ao `sim.py`): perdido indo reto `−1`, perdido virando `−3` (+ penalidade extra), `101/111` reto `+2`, `101/111` virando `−2`.
+- **Eventos sintéticos:** em 5% dos passos centrados, o PC envia primeiro o passo real (para o bootstrap ficar correto) e depois `I<estado>`; a MCU escolhe a ação para `101`/`111` sem atualizar a Q-table. O update dessa ação acontece no passo real seguinte.
+- **Snapshots:** `snapshots/qtable_AAAAMMDD_HHMMSS_epNNNN.txt` e histórico `history_AAAAMMDD_HHMMSS.csv`, sem sobrescrever execuções antigas.
 
 ---
 

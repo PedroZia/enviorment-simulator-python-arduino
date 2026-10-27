@@ -8,6 +8,8 @@
  *   Python -> ESP: "R\n"              (reset episode, decay epsilon)
  *   Python -> ESP: "Q\n"              (dump Q-table)
  *   Python -> ESP: "E<value>\n"       (set epsilon, e.g. "E0" for greedy)
+ *   Python -> ESP: "I<state>\n"       (pick action for a synthetic state,
+ *                                     no Q-update; used for 101/111)
  */
 
 #define N_STATES 8
@@ -23,6 +25,19 @@ float eps_decay = 0.99;
 int prev_state = -1;
 int prev_action = -1;
 bool ready_sent = false;
+
+
+int choose_action(int state) {
+  if ((float)random(1000) / 1000.0 < epsilon) {
+    return random(N_ACTIONS);
+  }
+  int best = 0;
+  for (int a = 1; a < N_ACTIONS; a++) {
+    if (q[state][a] > q[state][best]) best = a;
+  }
+  return best;
+}
+
 
 void setup() {
   Serial.begin(115200);
@@ -71,6 +86,17 @@ void loop() {
     return;
   }
 
+  // -- inject synthetic state: "I<state>", action only, no Q-update --
+  if (line.startsWith("I")) {
+    int state = line.substring(1).toInt();
+    if (state < 0 || state >= N_STATES) return;
+    int action = choose_action(state);
+    Serial.println(action);
+    prev_state = state;
+    prev_action = action;
+    return;
+  }
+
   // -- normal step: "L,M,R,reward" --
   int c1 = line.indexOf(',');
   int c2 = line.indexOf(',', c1 + 1);
@@ -95,15 +121,7 @@ void loop() {
   }
 
   // epsilon-greedy action selection
-  int action;
-  if ((float)random(1000) / 1000.0 < epsilon) {
-    action = random(N_ACTIONS);
-  } else {
-    action = 0;
-    for (int a = 1; a < N_ACTIONS; a++) {
-      if (q[state][a] > q[state][action]) action = a;
-    }
-  }
+  int action = choose_action(state);
 
   Serial.println(action);
 
