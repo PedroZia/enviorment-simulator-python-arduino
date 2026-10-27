@@ -73,7 +73,7 @@ int prev_action = -1;
 
 #define SPEED_BASE   100
 #define SPEED_TURN   120
-#define SPEED_INNER    0  // inner wheel during a turn:
+#define SPEED_INNER  -50  // inner wheel during a turn:
                           //   < 0  -> spins BACKWARDS (pivot in place)
                           //   0    -> pivot (inner wheel stops, outer pulls)
                           //   20-30 -> tight curve
