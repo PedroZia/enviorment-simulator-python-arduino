@@ -1,0 +1,16 @@
+.env
+/skills-lock.json
+/.agents
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / presentation build
+apresentacao/node_modules/
+
+# Office temp/lock files
+~$*

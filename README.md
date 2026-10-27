@@ -6,7 +6,8 @@ Convenção comum a todos os modos com sensores IR digitais:
 - `0` = branco (sensor fora da linha) · `1` = preto (sensor sobre a linha)
 - Estado `s = (L << 2) | (M << 1) | R` → 8 estados (0..7)
 - Ações `0` = virar esquerda · `1` = reto · `2` = virar direita
-- Hardware: 3 IR em D2/D3/D4, ponte H L298N em D5..D10
+- Hardware: 3 IR em D8/D9/D10, ponte H L298N em D3..D7 e D11
+- Fiação dos motores: canais A/B trocados e ambos invertidos no chassi; o firmware compensa em software (`set_motors()`), sem trocar fios
 
 ---
 
@@ -19,9 +20,9 @@ Robô físico real com controle **discreto fixo** (sem aprendizado). Serve de li
 ```mermaid
 flowchart TB
   subgraph HW["Hardware (Arduino Uno/Nano)"]
-    SENS["3x Sensor IR Digital<br/>D2=Esq · D3=Centro · D4=Dir<br/>(0=branco, 1=preto)"]
+    SENS["3x Sensor IR Digital<br/>D8=Esq · D9=Centro · D10=Dir<br/>(0=branco, 1=preto)"]
     MCU["Microcontrolador<br/>Lógica if-else FIXA<br/>(sem Q-table, sem reward)"]
-    MOT["Driver L298N + 2 Motores DC<br/>D5=ENA · D6/7=IN1/IN2<br/>D8/9=IN3/IN4 · D10=ENB"]
+    MOT["Driver L298N + 2 Motores DC<br/>D3=ENA · D4/5=IN1/IN2<br/>D6/7=IN3/IN4 · D11=ENB"]
   end
   SENS -->|leitura binária L,C,R| MCU
   MCU -->|PWM + sentido| MOT
@@ -138,7 +139,7 @@ Robô físico real que aprende **onboard**, sem PC e sem serial. Liga, lê os IR
 ```mermaid
 flowchart TB
   subgraph HW["Robô físico (Arduino Uno/Nano)"]
-    SENS["3x Sensor IR Digital<br/>D2/D3/D4 (0=branco,1=preto)"]
+    SENS["3x Sensor IR Digital<br/>D8/D9/D10 (0=branco,1=preto)"]
     subgraph FW["Firmware arduino_agent_sensors.ino (tudo onboard)"]
       RS["read_sensors()<br/>→ state 0..7"]
       CR["compute_reward(state)"]
@@ -147,7 +148,7 @@ flowchart TB
       DEC["auto-decay ε<br/>a cada 500 passos (×0.995)"]
       QTBL[("Q-table 8x3<br/>na RAM da MCU")]
     end
-    MOT["L298N + Motores<br/>D5=ENA · D6-9=IN1-4 · D10=ENB<br/>SPEED_BASE=120 · SPEED_TURN=150"]
+    MOT["L298N + Motores<br/>D3=ENA · D4-7=IN1-4 · D11=ENB<br/>SPEED_BASE=120 · SPEED_TURN=150"]
   end
   SENS --> RS
   RS --> CR
@@ -173,7 +174,7 @@ flowchart TD
   Q -->|não| AC
   UP --> AC["action = choose_action(state)<br/>se random() < ε → aleatório<br/>senão argmax Q[state]"]
   AC --> MX["set_motors(action)<br/>0: esq/2, dir forte · 1: base/base<br/>2: esq forte, dir/2"]
-  MX --> DL["delay(60 ms)"]
+  MX --> DL["delay(100 ms)"]
   DL --> SV["prev_state = state<br/>prev_action = action"]
   SV --> DK["step_count++<br/>se step_count % 500 == 0:<br/>ε = max(0.02, ε · 0.995)"]
   DK --> A
@@ -184,6 +185,7 @@ flowchart TD
 - **Recompensa** (idêntica ao `sim.py`): `c=1: +1.0`, `l=1: −0.5`, `r=1: −0.5`, `000: −3.0`
 - **Q-update:** `Q[s,a] += α·(r + γ·max_a' Q[s',a'] − Q[s,a])`, com `α=0.1`, `γ=0.9`
 - **Epsilon-greedy** com decaimento automático a cada `DECAY_STEPS = 500`: `ε ← max(0.02, ε · 0.995)`
+- **Passo físico:** cada ação dura `DELAY_MS = 100` — com pulsos curtos (~60 ms, testado em bancada) os motores com engrenagem não respondem a tempo, as ações se anulam e o robô "só anda pra frente" (o aprendizado não vê o efeito de cada ação)
 - **Q-table 8x3** em RAM; **sem serial**, **sem PC**, **sem ambiente simulado**.
 
 ---
