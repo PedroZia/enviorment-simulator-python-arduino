@@ -1,0 +1,24 @@
+flowchart TD
+    A([INÍCIO]) --> B[Ligar motores e sensores]
+    B --> C{Ler sensores}
+    C --> D[Sensor Esquerdo]
+    C --> E[Sensor Central]
+    C --> F[Sensor Direito]
+
+    D --> G{Esq = 0?}
+    G -- Sim --> H{Centro = 1?}
+    G -- Não --> I{Movimento: GIRAR À ESQUERDA<br/>Motor Esq: parado<br/>Motor Dir: girando}
+    H -- Sim --> J{Movimento: FRENTE<br/>Motor Esq: girando<br/>Motor Dir: girando}
+    H -- Não --> K{Movimento: GIRAR À ESQUERDA<br/>Motor Esq: parado<br/>Motor Dir: girando}
+
+    F --> L{Dir = 0?}
+    L -- Sim --> H
+    L -- Não --> M{Movimento: GIRAR À DIREITA<br/>Motor Esq: girando<br/>Motor Dir: parado}
+
+    I --> N[Aguardar pequeno atraso]
+    J --> N
+    K --> N
+    M --> N
+    N --> B
+
+    linkStyle default stroke-width:4px,stroke:#333
