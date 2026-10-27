@@ -36,16 +36,26 @@ PORT = 'COM3'      # ponytail: change to your ESP32/Arduino port
 BAUD = 115200
 
 # Ambiguous states: crossing with a central gap and thick/wide line.
-# They never appear on the plain oval, so the trainer injects them as
-# synthetic events; the MCU keeps doing all Q-learning.
+# They are trained on a separate straight track (see generate_feature_track).
 CROSS_STATES = ((1, 0, 1), (1, 1, 1))
-CROSS_INJECT_PROB = 0.05
 CROSS_STRAIGHT_BONUS = 2.0
 CROSS_TURN_PENALTY = -2.0
 
 # Lost-line recovery: keep searching straight instead of turning at random.
 # The straight reward stays negative so losing the line is never attractive.
 LOST_TURN_PENALTY = -3.0
+
+# Feature track used before the oval: wide line -> 111, gap -> 101.
+FEATURE_EPISODES = 40
+FEATURE_EPSILON = 0.10
+FEATURE_MAX_STEPS = 140
+FEATURE_X_MIN = -35.0
+FEATURE_X_MAX = 35.0
+FEATURE_WIDE_ZONE = (-15.0, -5.0)
+FEATURE_WIDE_HALF_WIDTH = 1.4
+FEATURE_GAP_ZONE = (5.0, 9.0)
+FEATURE_CROSS_ZONE = (4.5, 9.5)
+FEATURE_CROSS_Y = (1.0, 3.5)
 
 
 # ===================== TRACK =====================
@@ -89,6 +99,35 @@ def dist_to_track(x, y, track):
     return best
 
 
+class FeatureTrack(list):
+    """Straight track with a wide line and a central-gap crossing."""
+
+
+def generate_feature_track():
+    return FeatureTrack((x * 1.0, 0.0)
+                        for x in range(int(FEATURE_X_MIN), int(FEATURE_X_MAX) + 1))
+
+
+def _on_feature_ink(x, y):
+    # normal line, interrupted at the central gap
+    base = (FEATURE_X_MIN <= x <= FEATURE_X_MAX
+            and abs(y) < LINE_HALF_WIDTH
+            and not (FEATURE_GAP_ZONE[0] <= x <= FEATURE_GAP_ZONE[1]))
+    # wide section: side beams also see the line -> 111
+    wide = (FEATURE_WIDE_ZONE[0] <= x <= FEATURE_WIDE_ZONE[1]
+            and abs(y) < FEATURE_WIDE_HALF_WIDTH)
+    # perpendicular crossing, with a central gap -> 101
+    cross = (FEATURE_CROSS_ZONE[0] <= x <= FEATURE_CROSS_ZONE[1]
+             and FEATURE_CROSS_Y[0] <= abs(y) <= FEATURE_CROSS_Y[1])
+    return base or wide or cross
+
+
+def is_on_ink(x, y, track):
+    if isinstance(track, FeatureTrack):
+        return _on_feature_ink(x, y)
+    return dist_to_track(x, y, track) < LINE_HALF_WIDTH
+
+
 def tangent_at(idx, track):
     nxt = (idx + 1) % len(track)
     return math.atan2(track[nxt][1] - track[idx][1],
@@ -110,13 +149,9 @@ def read_sensors(x, y, theta, track):
     sy = [y + SENSOR_DIST * math.sin(theta + off)
           for off in (-SENSOR_ANGLE, 0.0, SENSOR_ANGLE)]
     return tuple(
-        1 if dist_to_track(sx[i], sy[i], track) < LINE_HALF_WIDTH else 0
+        1 if is_on_ink(sx[i], sy[i], track) else 0
         for i in range(3)
     )
-
-
-def encode_state(left, mid, right):
-    return (left << 2) | (mid << 1) | right
 
 
 def compute_reward(readings, action=None, current=None):
@@ -174,16 +209,6 @@ def send_step(ser, readings, reward):
     """Send sensor state and previous reward; return MCU's action."""
     msg = f'{readings[0]},{readings[1]},{readings[2]},{reward}\n'
     ser.write(msg.encode())
-    ser.flush()
-    resp = ser.readline().decode('utf-8', errors='ignore').strip()
-    if resp == '':
-        return None
-    return int(resp)
-
-
-def send_inject(ser, state):
-    """Ask the MCU to pick an action for a synthetic state (no Q-update)."""
-    ser.write(f'I{state}\n'.encode())
     ser.flush()
     resp = ser.readline().decode('utf-8', errors='ignore').strip()
     if resp == '':
@@ -273,7 +298,12 @@ class FakeESP32:
     def _choose_action(self, state):
         if random.random() < self.epsilon:
             return random.randrange(N_ACTIONS)
-        return max(range(N_ACTIONS), key=lambda a: self.q[state][a])
+        # Prefer straight when the values are tied (safe default on 101/111).
+        best = 1
+        for a in (0, 2):
+            if self.q[state][a] > self.q[state][best]:
+                best = a
+        return best
 
     def write(self, data):
         msg = data.decode() if isinstance(data, bytes) else data
@@ -289,13 +319,6 @@ class FakeESP32:
             self._buf.append('END')
         elif msg.startswith('E'):
             self.epsilon = float(msg[1:]) if len(msg) > 1 else 0.0
-        elif msg.startswith('I'):
-            # Synthetic state: choose an action, but do not update Q.
-            state = int(msg[1:]) if len(msg) > 1 else 0
-            action = self._choose_action(state)
-            self._buf.append(str(action))
-            self.prev_state = state
-            self.prev_action = action
         else:
             parts = msg.split(',')
             if len(parts) == 4:
@@ -326,7 +349,52 @@ class FakeESP32:
 
 # ===================== TRAINING =====================
 
-def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
+def train_feature(track, ser, episodes=FEATURE_EPISODES,
+                  epsilon=FEATURE_EPSILON):
+    """Phase 1: learn 101 (gap) and 111 (wide line) on a straight track."""
+    reward_log = []
+
+    for ep in range(episodes):
+        set_epsilon(ser, epsilon)
+        reset_esp(ser)
+
+        x, y = track[0]
+        theta = tangent_at(0, track)
+
+        total_reward = 0.0
+        lost_steps = 0
+        prev_reward = 0.0
+        readings = read_sensors(x, y, theta, track)
+
+        for step in range(FEATURE_MAX_STEPS):
+            action = send_step(ser, readings, prev_reward)
+            if action is None:
+                print(f'  [serial timeout at step {step}]')
+                break
+
+            x, y, theta = robot_step(x, y, theta, action)
+
+            next_readings = read_sensors(x, y, theta, track)
+            prev_reward = compute_reward(next_readings, action, readings)
+            total_reward += prev_reward
+
+            if next_readings == (0, 0, 0):
+                lost_steps += 1
+            else:
+                lost_steps = 0
+            if lost_steps >= LOST_LIMIT:
+                break
+
+            readings = next_readings
+
+        reward_log.append(total_reward)
+        print(f'feat {ep:3d} | R={total_reward:7.0f}')
+
+    return reward_log
+
+
+def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None,
+          episode_offset=0):
     n = len(track)
     reward_log = []
 
@@ -336,7 +404,7 @@ def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
         # ponytail: save Q-table snapshot between episodes (after reset, before first step)
         if save_interval > 0 and ep > 0 and ep % save_interval == 0:
             q = get_qtable(ser)
-            path = save_qtable(q, ep, stamp=stamp)
+            path = save_qtable(q, ep + episode_offset, stamp=stamp)
             print(f'  [snapshot saved: {path}]')
 
         idx = random.randrange(n)
@@ -346,26 +414,10 @@ def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
         total_reward = 0.0
         lost_steps = 0
         prev_reward = 0.0
-
         readings = read_sensors(x, y, theta, track)
 
         for step in range(MAX_STEPS):
-            current = readings
-            action = None
-
-            # Synthetic crossing/wide-line event. First send the real step so
-            # the previous transition bootstraps from the real next state,
-            # then let the MCU pick an action for the synthetic state. The
-            # 'I' command does not update Q, only prev_state/prev_action.
-            if readings == (0, 1, 0) and random.random() < CROSS_INJECT_PROB:
-                current = random.choice(CROSS_STATES)
-                if send_step(ser, readings, prev_reward) is None:
-                    print(f'  [serial timeout at step {step}]')
-                    break
-                action = send_inject(ser, encode_state(*current))
-            else:
-                action = send_step(ser, readings, prev_reward)
-
+            action = send_step(ser, readings, prev_reward)
             if action is None:
                 print(f'  [serial timeout at step {step}]')
                 break
@@ -373,14 +425,13 @@ def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
             x, y, theta = robot_step(x, y, theta, action)
 
             next_readings = read_sensors(x, y, theta, track)
-            prev_reward = compute_reward(next_readings, action, current)
+            prev_reward = compute_reward(next_readings, action, readings)
             total_reward += prev_reward
 
             if next_readings == (0, 0, 0):
                 lost_steps += 1
             else:
                 lost_steps = 0
-
             if lost_steps >= LOST_LIMIT:
                 break
 
@@ -390,7 +441,7 @@ def train(track, ser, episodes=EPISODES, save_interval=0, stamp=None):
 
         avg20 = sum(reward_log[-20:]) / min(20, len(reward_log))
         bar_len = min(int(max(0, total_reward) / 5), 40)
-        print(f'ep {ep:3d} | R={total_reward:7.0f} '
+        print(f'ep {ep + episode_offset:3d} | R={total_reward:7.0f} '
               f'| avg20={avg20:7.0f} | {"#" * bar_len}')
 
     return reward_log
@@ -441,6 +492,7 @@ if __name__ == '__main__':
     fake_mode = False
     save_interval = 0
     episodes = EPISODES
+    feature_episodes = FEATURE_EPISODES
     seed = 42
     for arg in sys.argv[1:]:
         if arg.startswith('--save='):
@@ -451,6 +503,8 @@ if __name__ == '__main__':
             fake_mode = True
         elif arg.startswith('--episodes='):
             episodes = int(arg.split('=', 1)[1])
+        elif arg.startswith('--feature-episodes='):
+            feature_episodes = int(arg.split('=', 1)[1])
         elif arg.startswith('--seed='):
             seed = int(arg.split('=', 1)[1])
         elif arg.startswith('--'):
@@ -460,6 +514,7 @@ if __name__ == '__main__':
             PORT = arg
 
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    total_episodes = feature_episodes + episodes
 
     print('Line Follower - MCU Agent Trainer')
     if fake_mode:
@@ -474,16 +529,24 @@ if __name__ == '__main__':
 
     random.seed(seed)
     track = generate_track()
+    feature_track = generate_feature_track()
     print(f'Track: {len(track)} pts | oval {TRACK_L*2:.0f}x{TRACK_R*2:.0f}')
-    print(f'Episodes: {episodes} | Max steps: {MAX_STEPS} | seed: {seed}')
+    print(f'Phases: {feature_episodes} feature + {episodes} oval '
+          f'= {total_episodes} episodes | seed: {seed}')
     if save_interval:
         print(f'Saving Q-table snapshots every {save_interval} episodes -> snapshots/')
     print()
 
     history = []
     try:
-        history = train(track, ser, episodes=episodes,
-                        save_interval=save_interval, stamp=stamp)
+        print('--- PHASE 1: feature track (101 gap / 111 wide line) ---')
+        history += train_feature(feature_track, ser, episodes=feature_episodes)
+
+        print('\n--- PHASE 2: oval track ---')
+        set_epsilon(ser, 1.0)   # full exploration for the normal states
+        history += train(track, ser, episodes=episodes,
+                         save_interval=save_interval, stamp=stamp,
+                         episode_offset=feature_episodes)
     except KeyboardInterrupt:
         print('\nInterrupted.')
 
@@ -498,7 +561,7 @@ if __name__ == '__main__':
         print(f'  [{l}{m}{r}] -> {vals}')
 
     # save final Q-table
-    final_path = save_qtable(q, episodes, stamp=stamp)
+    final_path = save_qtable(q, total_episodes, stamp=stamp)
     print(f'\nFinal Q-table saved: {final_path}')
 
     # save history with the same timestamp (never overwrite old runs)

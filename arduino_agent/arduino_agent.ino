@@ -8,8 +8,6 @@
  *   Python -> Arduino: "R\n"              (reset episode, decay epsilon)
  *   Python -> Arduino: "Q\n"              (dump Q-table)
  *   Python -> Arduino: "E<value>\n"       (set epsilon, e.g. "E0" for greedy)
- *   Python -> Arduino: "I<state>\n"       (pick action for a synthetic state,
- *                                          no Q-update; used for 101/111)
  */
 
 #define N_STATES 8
@@ -63,8 +61,9 @@ int choose_action(int state) {
   if ((float)random(1000) / 1000.0 < epsilon) {
     return random(N_ACTIONS);
   }
-  int best = 0;
-  for (int a = 1; a < N_ACTIONS; a++) {
+  // Prefer straight when all values are tied: safe default on 101/111.
+  int best = 1;
+  for (int a = 0; a < N_ACTIONS; a++) {
     if (q[state][a] > q[state][best]) best = a;
   }
   return best;
@@ -99,17 +98,6 @@ void process_line(const char* line) {
   // -- set epsilon --
   if (line[0] == 'E') {
     epsilon = safe_atof(line + 1);
-    return;
-  }
-
-  // -- inject synthetic state: "I<state>", action only, no Q-update --
-  if (line[0] == 'I') {
-    int state = atoi(line + 1);
-    if (state < 0 || state >= N_STATES) return;
-    int action = choose_action(state);
-    Serial.println(action);
-    prev_state = state;
-    prev_action = action;
     return;
   }
 

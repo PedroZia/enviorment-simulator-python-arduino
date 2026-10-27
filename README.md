@@ -91,11 +91,12 @@ flowchart TB
 
 ```mermaid
 flowchart TD
-  S([início do treinamento]) --> EPI(["episódio ep = 0..199"])
+  S([início do treinamento]) --> PH1["Fase 1 — pista de recursos (40 ep)<br/>linha larga → 111 · cruzamento com gap → 101"]
+  PH1 --> PH2["Fase 2 — pista oval (200 ep)<br/>estados normais + 000"]
+  PH2 --> EPI(["episódio ep = 0..239"])
   EPI --> INIT["posição e θ aleatórios na pista<br/>idx = random; θ = tangente ± ruído"]
   INIT --> ST["read_sensors() → leituras<br/>state = encode_state(L,M,R)"]
-  ST --> EV["evento sintético: 5% dos passos centrados<br/>vira 101 (gap) ou 111 (linha larga)"]
-  EV --> CHOOSE["choose_action(state, q, ε)<br/>ε-greedy"]
+  ST --> CHOOSE["choose_action(state, q, ε)<br/>ε-greedy"]
   CHOOSE --> STEP["robot_step(x,y,θ, ação)<br/>θ += (ação-1)·TURN_RATE<br/>(x,y) += SPEED·(cosθ,sinθ)"]
   STEP --> NS["read_sensors() → next_readings<br/>next_state = encode_state(...)"]
   NS --> RW["compute_reward(next_readings, ação, current)<br/>c=1: +1.0 · laterais: −0.5<br/>perdido/cruzamento: reto é recompensado"]
@@ -104,7 +105,7 @@ flowchart TD
   LOST -->|não| ST
   LOST -->|sim| END["fim do episódio<br/>guarda recompensa total"]
   END --> DECAY["ε = max(0.02, ε · 0.99)"]
-  DECAY --> NX{"ep < 200?"}
+  DECAY --> NX{"ep < 240?"}
   NX -->|sim| EPI
   NX -->|não| DEMO["demo (política greedy, ε=0)<br/>salva snapshot com timestamp<br/>e imprime a Q-table"]
 ```
@@ -128,10 +129,17 @@ flowchart TD
   | `101`/`111` e escolheu reto | `+2.0` extra |
   | `101`/`111` e escolheu virar | `−2.0` extra |
 
-- **Estados de cruzamento:** `101` (gap central) e `111` (linha larga) não
-  aparecem na pista oval. Para o agente aprender a política deles, o treino
-  injeta esses estados em 5% dos passos em que o robô está centrado (`010`),
-  mantendo a dinâmica real da pista.
+- **Duas fases (sem injeção de estados):**
+  1. **Pista de recursos** (reta separada): um trecho de **linha larga** produz
+     `111` e um **cruzamento com gap central** produz `101`. O robô lê esses
+     estados de verdade e aprende que a ação segura é **reto**.
+  2. **Pista oval**: o agente reaprende os estados normais (`001/010/011/100/110`
+     e o `000` ao perder a linha) sem apagar os valores de `101/111`, que não
+     aparecem na oval.
+
+  O `choose_action` usa uma regra de desempate: quando todos os Q-values são
+  iguais, escolhe **reto**. Isso evita que um estado ainda não treinado
+  (`101/111`) escolha "esquerda" por acaso e saia da pista.
 
 - **Atualização (Bellman):**
   `Q[s,a] ← Q[s,a] + α·( r + γ·max_a' Q[s',a'] − Q[s,a] )`
@@ -214,7 +222,7 @@ Ambiente simulado no PC (`train_serial.py`), “cérebro” Q-learning no Arduin
 flowchart LR
   subgraph PY["PC — train_serial.py (APENAS AMBIENTE)"]
     TR["AMBIENTE simulado<br/>generate_track() · robot_step()<br/>read_sensors() · compute_reward()"]
-    PROT["Camada serial<br/>envia 'L,M,R,reward' e 'I&lt;estado&gt;'<br/>recebe 'action'"]
+    PROT["Camada serial<br/>envia 'L,M,R,reward'<br/>recebe 'action'"]
   end
   SER[("Serial USB<br/>115200 baud")]
   subgraph ARD["Arduino/ESP32 — *_agent.ino (APENAS AGENTE Q-learning)"]
@@ -249,10 +257,10 @@ sequenceDiagram
   Ar-->>Ser: READY - boot concluido
   Note over Ar: Q-table 8x3 zerada, epsilon = 1.0
 
-  loop cada episodio - 200 vezes
+  loop 40 episodios na pista de recursos + 200 na oval
     Py->>Ser: R + LF - reset e decay do epsilon
     Note over Ar: decay do epsilon fator 0.99 min 0.02, zera prev_state
-    loop cada passo - ate MAX_STEPS 1000
+    loop cada passo - ate MAX_STEPS
       Py->>Ser: L,M,R,reward + LF
       Ar->>Ar: state = L*4 + M*2 + R
       Ar->>Ar: Q-update em prev_state e prev_action com reward
@@ -260,11 +268,6 @@ sequenceDiagram
       Ar-->>Ser: action + LF
       Ser-->>Py: action
       Py->>Py: robot_step action, read_sensors, compute_reward
-      opt 5% dos passos centrados - evento 101/111
-        Note over Py,Ar: o passo real acima ja atualizou Q; agora escolhe a acao sintetica
-        Py->>Ser: I&lt;estado&gt; + LF - acao para 101/111, sem Q-update
-        Ar-->>Ser: action + LF
-      end
     end
   end
 
@@ -283,7 +286,6 @@ sequenceDiagram
 | Python → Arduino | `Q\n` | pede dump da Q-table |
 | Arduino → Python | `s,Q0,Q1,Q2` ×8 + `END` | conteúdo da Q-table 8x3 |
 | Python → Arduino | `E<valor>\n` | fixa ε (`E0` = greedy) |
-| Python → Arduino | `I<estado>\n` | escolhe ação para um estado sintético (101/111) **sem** Q-update; usado nos eventos de cruzamento |
 | Arduino → Python | `READY` | boot concluído |
 
 ### 4.4 Q-learning no Arduino (mesmo do Modo 2, rodando na MCU)
@@ -293,8 +295,11 @@ sequenceDiagram
 - ε-greedy: com prob. `ε` ação aleatória; senão `argmax_a Q[state][a]`.
 - Decay de ε aplicado no comando `R` (a cada episódio): `ε ← max(0.02, ε·0.99)`.
 - **Recompensa moldada** (igual ao `sim.py`): perdido indo reto `−1`, perdido virando `−3` (+ penalidade extra), `101/111` reto `+2`, `101/111` virando `−2`.
-- **Eventos sintéticos:** em 5% dos passos centrados, o PC envia primeiro o passo real (para o bootstrap ficar correto) e depois `I<estado>`; a MCU escolhe a ação para `101`/`111` sem atualizar a Q-table. O update dessa ação acontece no passo real seguinte.
-- **Snapshots:** `snapshots/qtable_AAAAMMDD_HHMMSS_epNNNN.txt` e histórico `history_AAAAMMDD_HHMMSS.csv`, sem sobrescrever execuções antigas.
+- **Duas fases, sem injeção de estados:**
+  1. **40 episódios** numa reta com **linha larga** (`111`) e **cruzamento com gap central** (`101`). O PC só envia as leituras reais; a MCU faz todos os Q-updates.
+  2. **200 episódios** na pista oval, reaprendendo os estados normais e o `000` sem apagar `101/111`.
+- **Desempate:** `choose_action` prefere **reto** quando os Q-values estão empatados. Isso evita que um estado ainda não treinado saia da pista por escolher "esquerda" no empate.
+- **Snapshot final:** `snapshots/qtable_AAAAMMDD_HHMMSS_ep0240.txt` e histórico `history_AAAAMMDD_HHMMSS.csv`, sem sobrescrever execuções antigas.
 
 ---
 

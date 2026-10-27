@@ -33,16 +33,26 @@ N_ACTIONS = 3         # 0=left, 1=straight, 2=right
 N_STATES = 8          # 3 binary sensors -> 0..7
 
 # Ambiguous states: crossing with a central gap and thick/wide line.
-# On the plain oval they are never seen, so the trainer injects them as
-# synthetic events (the robot keeps following the real line meanwhile).
+# They are trained on a separate straight track (see generate_feature_track).
 CROSS_STATES = ((1, 0, 1), (1, 1, 1))
-CROSS_INJECT_PROB = 0.05
 CROSS_STRAIGHT_BONUS = 2.0
 CROSS_TURN_PENALTY = -2.0
 
 # Lost-line recovery: keep searching straight instead of turning at random.
 # The straight reward stays negative so losing the line is never attractive.
 LOST_TURN_PENALTY = -3.0
+
+# Feature track used before the oval: wide line -> 111, gap -> 101.
+FEATURE_EPISODES = 40
+FEATURE_EPSILON = 0.10
+FEATURE_MAX_STEPS = 140
+FEATURE_X_MIN = -35.0
+FEATURE_X_MAX = 35.0
+FEATURE_WIDE_ZONE = (-15.0, -5.0)
+FEATURE_WIDE_HALF_WIDTH = 1.4
+FEATURE_GAP_ZONE = (5.0, 9.0)
+FEATURE_CROSS_ZONE = (4.5, 9.5)
+FEATURE_CROSS_Y = (1.0, 3.5)
 
 
 # ===================== TRACK =====================
@@ -87,6 +97,35 @@ def dist_to_track(x, y, track):
     return best
 
 
+class FeatureTrack(list):
+    """Straight track with a wide line and a central-gap crossing."""
+
+
+def generate_feature_track():
+    return FeatureTrack((x * 1.0, 0.0)
+                        for x in range(int(FEATURE_X_MIN), int(FEATURE_X_MAX) + 1))
+
+
+def _on_feature_ink(x, y):
+    # normal line, interrupted at the central gap
+    base = (FEATURE_X_MIN <= x <= FEATURE_X_MAX
+            and abs(y) < LINE_HALF_WIDTH
+            and not (FEATURE_GAP_ZONE[0] <= x <= FEATURE_GAP_ZONE[1]))
+    # wide section: side beams also see the line -> 111
+    wide = (FEATURE_WIDE_ZONE[0] <= x <= FEATURE_WIDE_ZONE[1]
+            and abs(y) < FEATURE_WIDE_HALF_WIDTH)
+    # perpendicular crossing, with a central gap -> 101
+    cross = (FEATURE_CROSS_ZONE[0] <= x <= FEATURE_CROSS_ZONE[1]
+             and FEATURE_CROSS_Y[0] <= abs(y) <= FEATURE_CROSS_Y[1])
+    return base or wide or cross
+
+
+def is_on_ink(x, y, track):
+    if isinstance(track, FeatureTrack):
+        return _on_feature_ink(x, y)
+    return dist_to_track(x, y, track) < LINE_HALF_WIDTH
+
+
 def tangent_at(idx, track):
     nxt = (idx + 1) % len(track)
     return math.atan2(track[nxt][1] - track[idx][1],
@@ -108,7 +147,7 @@ def read_sensors(x, y, theta, track):
     sy = [y + SENSOR_DIST * math.sin(theta + off)
           for off in (-SENSOR_ANGLE, 0.0, SENSOR_ANGLE)]
     return tuple(
-        1 if dist_to_track(sx[i], sy[i], track) < LINE_HALF_WIDTH else 0
+        1 if is_on_ink(sx[i], sy[i], track) else 0
         for i in range(3)
     )
 
@@ -153,8 +192,9 @@ def choose_action(state, q, epsilon):
     if random.random() < epsilon:
         return random.randrange(N_ACTIONS)
     row = q[state]
-    best = 0
-    for a in range(1, N_ACTIONS):
+    # Prefer straight when the values are tied (safe default on 101/111).
+    best = 1
+    for a in (0, 2):
         if row[a] > row[best]:
             best = a
     return best
@@ -170,9 +210,48 @@ def q_update(q, state, action, reward, next_state):
 
 # ===================== TRAINING =====================
 
-def train(track, episodes=200):
+def train_feature(track, q, episodes=FEATURE_EPISODES,
+                  epsilon=FEATURE_EPSILON):
+    """Phase 1: learn 101 (gap) and 111 (wide line) on a straight track."""
+    reward_log = []
+
+    for ep in range(episodes):
+        x, y = track[0]
+        theta = tangent_at(0, track)
+
+        total_reward = 0.0
+        lost_steps = 0
+
+        for _ in range(FEATURE_MAX_STEPS):
+            readings = read_sensors(x, y, theta, track)
+            state = encode_state(*readings)
+            action = choose_action(state, q, epsilon)
+
+            x, y, theta = robot_step(x, y, theta, action)
+
+            next_readings = read_sensors(x, y, theta, track)
+            next_state = encode_state(*next_readings)
+            reward = compute_reward(next_readings, action, readings)
+            q_update(q, state, action, reward, next_state)
+            total_reward += reward
+
+            if next_readings == (0, 0, 0):
+                lost_steps += 1
+            else:
+                lost_steps = 0
+            if lost_steps >= LOST_LIMIT:
+                break
+
+        reward_log.append(total_reward)
+        print(f'feat {ep:3d} | R={total_reward:7.0f}')
+
+    return reward_log
+
+
+def train(track, episodes=200, q=None, episode_offset=0):
     n = len(track)
-    q = [[0.0] * N_ACTIONS for _ in range(N_STATES)]
+    if q is None:
+        q = [[0.0] * N_ACTIONS for _ in range(N_STATES)]
     epsilon = EPS_START
     reward_log = []
 
@@ -187,21 +266,13 @@ def train(track, episodes=200):
         for _ in range(MAX_STEPS):
             readings = read_sensors(x, y, theta, track)
             state = encode_state(*readings)
-
-            # Synthetic crossing/wide-line event: pretend the sensors see a
-            # gap or a thick line while the robot is centred on the real one.
-            current = readings
-            if readings == (0, 1, 0) and random.random() < CROSS_INJECT_PROB:
-                current = random.choice(CROSS_STATES)
-                state = encode_state(*current)
-
             action = choose_action(state, q, epsilon)
 
             x, y, theta = robot_step(x, y, theta, action)
 
             next_readings = read_sensors(x, y, theta, track)
             next_state = encode_state(*next_readings)
-            reward = compute_reward(next_readings, action, current)
+            reward = compute_reward(next_readings, action, readings)
 
             q_update(q, state, action, reward, next_state)
 
@@ -220,7 +291,7 @@ def train(track, episodes=200):
 
         avg20 = sum(reward_log[-20:]) / min(20, len(reward_log))
         bar_len = min(int(max(0, total_reward) / 5), 40)
-        print(f'ep {ep:3d} | e={epsilon:.3f} | R={total_reward:7.0f} '
+        print(f'ep {ep + episode_offset:3d} | e={epsilon:.3f} | R={total_reward:7.0f} '
               f'| avg20={avg20:7.0f} | {"#" * bar_len}')
 
     return q, reward_log
@@ -296,10 +367,13 @@ def save_qtable(q, episode=None, folder='snapshots', stamp=None):
 
 if __name__ == '__main__':
     episodes = 200
+    feature_episodes = FEATURE_EPISODES
     seed = 42
     for arg in sys.argv[1:]:
         if arg.startswith('--episodes='):
             episodes = int(arg.split('=', 1)[1])
+        elif arg.startswith('--feature-episodes='):
+            feature_episodes = int(arg.split('=', 1)[1])
         elif arg.startswith('--seed='):
             seed = int(arg.split('=', 1)[1])
         else:
@@ -308,17 +382,28 @@ if __name__ == '__main__':
     random.seed(seed)
 
     track = generate_track()
+    feature_track = generate_feature_track()
+    total_episodes = feature_episodes + episodes
     print(f'Track: {len(track)} pts | oval {TRACK_L*2:.0f}x{TRACK_R*2:.0f} '
           f'| line_w={LINE_HALF_WIDTH*2:.1f} sensor_a={math.degrees(SENSOR_ANGLE):.0f}deg')
     print(f'States: {N_STATES} | Actions: {N_ACTIONS} | '
           f'a={ALPHA} g={GAMMA} eps_d={EPS_DECAY}')
-    print(f'Crossing events: {CROSS_INJECT_PROB:.0%} of centred steps')
+    print(f'Phases: {feature_episodes} feature + {episodes} oval '
+          f'= {total_episodes} episodes')
     print()
 
-    q, history = train(track, episodes=episodes)
+    q = [[0.0] * N_ACTIONS for _ in range(N_STATES)]
+    print('--- PHASE 1: feature track (101 gap / 111 wide line) ---')
+    history = train_feature(feature_track, q, episodes=feature_episodes)
+
+    print('\n--- PHASE 2: oval track ---')
+    q, oval_history = train(track, episodes=episodes, q=q,
+                            episode_offset=feature_episodes)
+    history += oval_history
+
     print_qtable(q)
 
-    path = save_qtable(q, episode=episodes)
+    path = save_qtable(q, episode=total_episodes)
     print(f'\nSnapshot saved: {path}')
 
     demo(track, q)
