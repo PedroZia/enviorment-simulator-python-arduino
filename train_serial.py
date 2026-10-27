@@ -350,13 +350,20 @@ class FakeESP32:
 # ===================== TRAINING =====================
 
 def train_feature(track, ser, episodes=FEATURE_EPISODES,
-                  epsilon=FEATURE_EPSILON):
+                  epsilon=FEATURE_EPSILON, save_interval=0, stamp=None):
     """Phase 1: learn 101 (gap) and 111 (wide line) on a straight track."""
     reward_log = []
 
     for ep in range(episodes):
         set_epsilon(ser, epsilon)
         reset_esp(ser)
+
+        # Snapshot at the start of an interval episode: the table already has
+        # the result of the previous `ep` episodes.
+        if save_interval > 0 and ep > 0 and ep % save_interval == 0:
+            q = get_qtable(ser)
+            path = save_qtable(q, ep, stamp=stamp)
+            print(f'  [snapshot saved: {path}]')
 
         x, y = track[0]
         theta = tangent_at(0, track)
@@ -389,6 +396,12 @@ def train_feature(track, ser, episodes=FEATURE_EPISODES,
 
         reward_log.append(total_reward)
         print(f'feat {ep:3d} | R={total_reward:7.0f}')
+
+    # Always leave a snapshot of the final feature-phase table.
+    if save_interval > 0 and episodes > 0:
+        q = get_qtable(ser)
+        path = save_qtable(q, episodes, stamp=stamp)
+        print(f'  [snapshot saved: {path}]')
 
     return reward_log
 
@@ -534,13 +547,15 @@ if __name__ == '__main__':
     print(f'Phases: {feature_episodes} feature + {episodes} oval '
           f'= {total_episodes} episodes | seed: {seed}')
     if save_interval:
-        print(f'Saving Q-table snapshots every {save_interval} episodes -> snapshots/')
+        print(f'Saving Q-table snapshots every {save_interval} episodes '
+              f'(both phases) -> snapshots/')
     print()
 
     history = []
     try:
         print('--- PHASE 1: feature track (101 gap / 111 wide line) ---')
-        history += train_feature(feature_track, ser, episodes=feature_episodes)
+        history += train_feature(feature_track, ser, episodes=feature_episodes,
+                                 save_interval=save_interval, stamp=stamp)
 
         print('\n--- PHASE 2: oval track ---')
         set_epsilon(ser, 1.0)   # full exploration for the normal states

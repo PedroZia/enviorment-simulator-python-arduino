@@ -198,10 +198,15 @@ FUNÇÃO set_epsilon(conexão, ε):
 
 // ---------- treinamento ----------
 
-FUNÇÃO train_feature(pista_recursos, conexão, episódios = 40):
+FUNÇÃO train_feature(pista_recursos, conexão, episódios = 40,
+                     save_interval = 0, timestamp):
     PARA episódio em 1..40:
         envia "E0.10"                                  // ε fixo para explorar
         reset_episodio(conexão)
+        // com --save: snapshot a cada N episódios, inclusive nesta fase
+        SE save_interval > 0 E episódio % save_interval == 0:
+            salvar_qtable(get_qtable(conexão), episódio, timestamp)
+
         (x, y) ← pista_recursos[0]                     // começa centrado na reta
         θ ← 0
 
@@ -226,12 +231,18 @@ FUNÇÃO train_feature(pista_recursos, conexão, episódios = 40):
 
         registra recompensa_total no histórico
 
+    SE save_interval > 0:
+        salvar_qtable(get_qtable(conexão), 40, timestamp)  // fim da fase 1
+
     RETORNA o histórico
 
 
 FUNÇÃO train(pista, conexão, episódios = 200):
     PARA episódio em 1..200:
         reset_episodio(conexão)
+        // com --save: snapshot a cada N episódios (offset = 40 da fase 1)
+        SE save_interval > 0 E episódio % save_interval == 0:
+            salvar_qtable(get_qtable(conexão), episódio + 40, timestamp)
         // posição inicial aleatória sobre a pista, com leve desalinhamento
         índice ← aleatório na pista
         (x, y) ← pista[índice]

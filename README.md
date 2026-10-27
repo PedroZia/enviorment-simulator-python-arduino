@@ -146,9 +146,11 @@ flowchart TD
 
 - **Q-table:** 8 (estados) × 3 (ações), iniciada em zero.
 
-- **Snapshot:** ao final do treino, `sim.py` grava
+- **Snapshots:** ao final do treino, `sim.py` grava
   `snapshots/qtable_AAAAMMDD_HHMMSS_epNNNN.txt`, sem sobrescrever execuções
-  anteriores.
+  anteriores. Com `--save` (ou `--save=N`), também grava a cada N episódios
+  **desde a fase 1**: `ep0010...ep0040` na pista de recursos e
+  `ep0050...ep0240` na oval.
 
 ---
 
@@ -299,7 +301,7 @@ sequenceDiagram
   1. **40 episódios** numa reta com **linha larga** (`111`) e **cruzamento com gap central** (`101`). O PC só envia as leituras reais; a MCU faz todos os Q-updates.
   2. **200 episódios** na pista oval, reaprendendo os estados normais e o `000` sem apagar `101/111`.
 - **Desempate:** `choose_action` prefere **reto** quando os Q-values estão empatados. Isso evita que um estado ainda não treinado saia da pista por escolher "esquerda" no empate.
-- **Snapshot final:** `snapshots/qtable_AAAAMMDD_HHMMSS_ep0240.txt` e histórico `history_AAAAMMDD_HHMMSS.csv`, sem sobrescrever execuções antigas.
+- **Snapshots:** o final é `snapshots/qtable_AAAAMMDD_HHMMSS_ep0240.txt`; com `--save` (ou `--save=N`) também salva a cada N episódios **desde a fase 1**: `ep0010...ep0040` (recursos) e `ep0050...ep0240` (oval). Histórico em `history_AAAAMMDD_HHMMSS.csv`. Nada sobrescreve execuções antigas.
 
 ---
 

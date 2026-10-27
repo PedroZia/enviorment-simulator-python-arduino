@@ -211,11 +211,17 @@ def q_update(q, state, action, reward, next_state):
 # ===================== TRAINING =====================
 
 def train_feature(track, q, episodes=FEATURE_EPISODES,
-                  epsilon=FEATURE_EPSILON):
+                  epsilon=FEATURE_EPSILON, save_interval=0, stamp=None):
     """Phase 1: learn 101 (gap) and 111 (wide line) on a straight track."""
     reward_log = []
 
     for ep in range(episodes):
+        # Snapshot at the start of an interval episode: the table already has
+        # the result of the previous `ep` episodes.
+        if save_interval > 0 and ep > 0 and ep % save_interval == 0:
+            path = save_qtable(q, ep, stamp=stamp)
+            print(f'  [snapshot saved: {path}]')
+
         x, y = track[0]
         theta = tangent_at(0, track)
 
@@ -245,10 +251,16 @@ def train_feature(track, q, episodes=FEATURE_EPISODES,
         reward_log.append(total_reward)
         print(f'feat {ep:3d} | R={total_reward:7.0f}')
 
+    # Always leave a snapshot of the final feature-phase table.
+    if save_interval > 0 and episodes > 0:
+        path = save_qtable(q, episodes, stamp=stamp)
+        print(f'  [snapshot saved: {path}]')
+
     return reward_log
 
 
-def train(track, episodes=200, q=None, episode_offset=0):
+def train(track, episodes=200, q=None, episode_offset=0,
+          save_interval=0, stamp=None):
     n = len(track)
     if q is None:
         q = [[0.0] * N_ACTIONS for _ in range(N_STATES)]
@@ -256,6 +268,10 @@ def train(track, episodes=200, q=None, episode_offset=0):
     reward_log = []
 
     for ep in range(episodes):
+        if save_interval > 0 and ep > 0 and ep % save_interval == 0:
+            path = save_qtable(q, ep + episode_offset, stamp=stamp)
+            print(f'  [snapshot saved: {path}]')
+
         idx = random.randrange(n)
         x, y = track[idx]
         theta = tangent_at(idx, track) + random.uniform(-0.3, 0.3)
@@ -368,18 +384,24 @@ def save_qtable(q, episode=None, folder='snapshots', stamp=None):
 if __name__ == '__main__':
     episodes = 200
     feature_episodes = FEATURE_EPISODES
+    save_interval = 0
     seed = 42
     for arg in sys.argv[1:]:
         if arg.startswith('--episodes='):
             episodes = int(arg.split('=', 1)[1])
         elif arg.startswith('--feature-episodes='):
             feature_episodes = int(arg.split('=', 1)[1])
+        elif arg.startswith('--save='):
+            save_interval = int(arg.split('=', 1)[1])
+        elif arg == '--save':
+            save_interval = 10
         elif arg.startswith('--seed='):
             seed = int(arg.split('=', 1)[1])
         else:
             print(f'unknown option: {arg}')
             sys.exit(2)
     random.seed(seed)
+    stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
     track = generate_track()
     feature_track = generate_feature_track()
@@ -390,20 +412,25 @@ if __name__ == '__main__':
           f'a={ALPHA} g={GAMMA} eps_d={EPS_DECAY}')
     print(f'Phases: {feature_episodes} feature + {episodes} oval '
           f'= {total_episodes} episodes')
+    if save_interval:
+        print(f'Saving Q-table snapshots every {save_interval} episodes '
+              f'(both phases) -> snapshots/')
     print()
 
     q = [[0.0] * N_ACTIONS for _ in range(N_STATES)]
     print('--- PHASE 1: feature track (101 gap / 111 wide line) ---')
-    history = train_feature(feature_track, q, episodes=feature_episodes)
+    history = train_feature(feature_track, q, episodes=feature_episodes,
+                            save_interval=save_interval, stamp=stamp)
 
     print('\n--- PHASE 2: oval track ---')
     q, oval_history = train(track, episodes=episodes, q=q,
-                            episode_offset=feature_episodes)
+                            episode_offset=feature_episodes,
+                            save_interval=save_interval, stamp=stamp)
     history += oval_history
 
     print_qtable(q)
 
-    path = save_qtable(q, episode=total_episodes)
+    path = save_qtable(q, episode=total_episodes, stamp=stamp)
     print(f'\nSnapshot saved: {path}')
 
     demo(track, q)
